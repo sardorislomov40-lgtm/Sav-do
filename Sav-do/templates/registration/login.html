@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Kirish{% endblock %}
+{% block guest %}
+<div class="mt-16">
+  <h1 class="h1 mb-1">Sav-do</h1>
+  <p class="mb-6 text-muted">Do'kon boshqaruvi. Tizimga kiring.</p>
+  <form method="post" class="card space-y-4 p-5">
+    {% csrf_token %}
+    {% if form.errors %}<p class="rounded-lg bg-brick-soft px-3 py-2 text-sm font-semibold text-brick">Login yoki parol noto'g'ri.</p>{% endif %}
+    <div><label class="mb-1 block text-sm font-semibold" for="id_username">Login</label>
+      <input id="id_username" name="username" class="input" autocomplete="username" autofocus required></div>
+    <div><label class="mb-1 block text-sm font-semibold" for="id_password">Parol</label>
+      <input id="id_password" name="password" type="password" class="input" autocomplete="current-password" required></div>
+    <button class="btn btn-primary w-full">Kirish</button>
+    <input type="hidden" name="next" value="{{ next }}">
+  </form>
+</div>
+{% endblock %}

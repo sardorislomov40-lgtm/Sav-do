@@ -1,0 +1,76 @@
+{% load static %}<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}Sav-do{% endblock %} · Sav-do</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  {# Ishlab chiqish uchun Tailwind CDN. Ishlab chiqarishda Tailwind CLI bilan build qilish tavsiya etiladi (README). #}
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: {
+      colors: {
+        ink: '#16262B', paper: '#F2F4F1', line: '#DCE3E1', muted: '#5C6E73',
+        brand: { DEFAULT: '#0A7C86', dark: '#08656D', soft: '#E2F2F3' },
+        saffron: { DEFAULT: '#E3A21A', soft: '#FFF3D4' },
+        brick: { DEFAULT: '#B23A2B', soft: '#FBE9E6' },
+      },
+      fontFamily: { sans: ['Manrope', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+    } } }
+  </script>
+  <style type="text/tailwindcss">
+    @layer components {
+      .input { @apply w-full rounded-lg border border-line bg-white px-3 py-2.5 text-base text-ink placeholder:text-muted/70 focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/25 disabled:bg-paper disabled:text-muted; }
+      .btn { @apply inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-paper focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand; }
+      .btn-primary { @apply border-brand bg-brand text-white hover:bg-brand-dark; }
+      .btn-danger { @apply border-brick/40 text-brick hover:bg-brick-soft; }
+      .card { @apply rounded-xl border border-line bg-white; }
+      .badge { @apply inline-block rounded-md px-2 py-0.5 text-xs font-semibold; }
+      .scan { @apply border-2 border-brand py-3.5 text-lg font-semibold tabular-nums focus:border-saffron focus:ring-saffron/30; }
+      .h1 { @apply text-2xl font-extrabold tracking-tight md:text-3xl; }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
+</head>
+<body class="bg-paper font-sans text-ink antialiased" hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+{% if user.is_authenticated %}
+<div class="md:flex md:min-h-screen">
+  <aside class="sticky top-0 hidden h-screen w-60 shrink-0 flex-col gap-1 bg-ink p-4 text-white/75 md:flex">
+    <a href="{% url 'home' %}" class="px-3 pb-4 pt-2 text-2xl font-extrabold tracking-tight text-white">Sav-do</a>
+    {% for item in nav %}
+      <a href="{{ item.url }}" class="rounded-lg border-l-4 px-3 py-2.5 text-sm font-semibold {% if item.active %}border-saffron bg-white/10 text-white{% else %}border-transparent hover:bg-white/5 hover:text-white{% endif %}">{{ item.label }}</a>
+    {% endfor %}
+    {% if can_stock %}<a href="{% url 'catalog:category_list' %}" class="rounded-lg border-l-4 border-transparent px-3 py-2.5 text-sm font-semibold hover:bg-white/5 hover:text-white">Kategoriyalar</a>{% endif %}
+    {% if is_admin %}<a href="/admin/" class="rounded-lg border-l-4 border-transparent px-3 py-2.5 text-sm font-semibold hover:bg-white/5 hover:text-white">Admin panel</a>{% endif %}
+    <div class="mt-auto border-t border-white/10 pt-3 text-sm">
+      <p class="px-3 font-semibold text-white">{{ user.get_full_name|default:user.username }}</p>
+      <p class="px-3 pb-2 text-xs text-white/60">{{ user.get_role_display }}</p>
+      <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="w-full rounded-lg px-3 py-2 text-left font-semibold hover:bg-white/5 hover:text-white">Chiqish</button></form>
+    </div>
+  </aside>
+
+  <div class="min-w-0 flex-1">
+    <header class="sticky top-0 z-20 flex items-center justify-between bg-ink px-4 py-3 text-white md:hidden">
+      <a href="{% url 'home' %}" class="text-lg font-extrabold tracking-tight">Sav-do</a>
+      <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="text-sm font-semibold text-white/80">{{ user.username }} · Chiqish</button></form>
+    </header>
+    <main class="mx-auto max-w-6xl p-4 pb-28 md:p-8">
+      {% for m in messages %}
+        <div class="mb-4 rounded-lg border px-4 py-3 text-sm font-semibold {% if m.level_tag == 'error' %}border-brick/30 bg-brick-soft text-brick{% elif m.level_tag == 'warning' %}border-saffron/40 bg-saffron-soft{% else %}border-brand/30 bg-brand-soft text-brand-dark{% endif %}" role="status">{{ m }}</div>
+      {% endfor %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+<nav class="fixed inset-x-0 bottom-0 z-20 flex border-t border-line bg-white pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Asosiy">
+  {% for item in nav %}{% if item.bottom %}
+    <a href="{{ item.url }}" class="flex min-h-[56px] flex-1 items-center justify-center text-xs font-bold {% if item.active %}border-t-4 border-saffron text-brand-dark{% else %}border-t-4 border-transparent text-muted{% endif %}">{{ item.short }}</a>
+  {% endif %}{% endfor %}
+</nav>
+{% else %}
+<main class="mx-auto max-w-md p-4">{% block guest %}{% endblock %}</main>
+{% endif %}
+</body>
+</html>

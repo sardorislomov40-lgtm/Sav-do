@@ -1,0 +1,27 @@
+{% load sav_extras %}
+{% if rows %}
+<ul class="card divide-y divide-line">
+  {% for r in rows %}
+  <li class="flex items-center gap-3 px-3 py-2.5 hover:bg-paper">
+    <input type="checkbox" name="product" value="{{ r.product.pk }}" class="h-5 w-5 shrink-0 accent-brand" aria-label="Tanlash: {{ r.product.name }}">
+    <a href="{% url 'catalog:product_detail' r.product.pk %}" class="min-w-0 flex-1">
+      <p class="truncate font-bold">{{ r.product.name }}{% if not r.product.is_active %} <span class="badge bg-paper text-muted">arxiv</span>{% endif %}</p>
+      <p class="truncate text-sm text-muted">{% if r.product.category %}{{ r.product.category.name }}{% else %}Kategoriyasiz{% endif %}{% if r.product.sku %} · {{ r.product.sku }}{% endif %}
+        <span class="md:hidden">· {{ r.retail|money }} / {{ r.wholesale|money }}</span></p>
+    </a>
+    <div class="hidden w-28 text-right text-sm tabular-nums md:block"><span class="text-muted">Chakana</span><br><b>{{ r.retail|money }}</b></div>
+    <div class="hidden w-28 text-right text-sm tabular-nums md:block"><span class="text-muted">Ulgurji</span><br><b>{{ r.wholesale|money }}</b></div>
+    <div class="w-24 shrink-0 text-right tabular-nums">
+      <p class="font-extrabold {% if r.low %}text-brick{% endif %}">{{ r.stock|qty|default:"0" }}</p>
+      <p class="text-xs text-muted">{{ r.product.base_unit.short_name }}{% if r.low %} · kam{% endif %}</p>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% include "partials/_pagination.html" %}
+{% else %}
+<div class="card p-6 text-center">
+  <p class="font-bold">Tovar topilmadi</p>
+  <p class="mt-1 text-sm text-muted">{% if q %}Qidiruvni o'zgartirib ko'ring.{% elif can_stock %}«Yangi tovar» tugmasi bilan birinchi tovarni qo'shing.{% else %}Tovarlarni Omborchi yoki Admin qo'shadi.{% endif %}</p>
+</div>
+{% endif %}

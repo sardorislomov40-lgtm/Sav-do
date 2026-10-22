@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% load sav_extras %}
+{% block title %}Bosh sahifa{% endblock %}
+{% block content %}
+<h1 class="h1 mb-5">Salom, {{ user.first_name|default:user.username }}</h1>
+
+<div class="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+  <a href="{% url 'catalog:product_list' %}" class="card p-4"><p class="text-sm text-muted">Faol tovarlar</p><p class="text-3xl font-extrabold tabular-nums">{{ product_count }}</p></a>
+  <a href="{% url 'inventory:stock_list' %}?only=low" class="card p-4 {% if low_total %}border-saffron bg-saffron-soft{% endif %}"><p class="text-sm text-muted">Qoldig'i kam</p><p class="text-3xl font-extrabold tabular-nums">{{ low_total }}</p></a>
+  {% if can_stock %}
+  <a href="{% url 'inventory:receipt_list' %}?status=draft" class="card p-4"><p class="text-sm text-muted">Tugallanmagan kirim</p><p class="text-3xl font-extrabold tabular-nums">{{ draft_receipts }}</p></a>
+  <a href="{% url 'inventory:count_list' %}" class="card p-4"><p class="text-sm text-muted">Ochiq inventarizatsiya</p><p class="text-3xl font-extrabold tabular-nums">{{ draft_counts }}</p></a>
+  {% endif %}
+</div>
+
+{% if can_stock %}
+<div class="mb-8 flex flex-wrap gap-3">
+  <a class="btn btn-primary" href="{% url 'inventory:receipt_create' %}">Yangi kirim</a>
+  <a class="btn" href="{% url 'catalog:product_create' %}">Yangi tovar</a>
+  <a class="btn" href="{% url 'inventory:count_create' %}">Inventarizatsiya boshlash</a>
+</div>
+{% endif %}
+
+<div class="grid gap-6 md:grid-cols-2">
+  <section>
+    <h2 class="mb-2 text-lg font-bold">Qoldig'i tugayotgan tovarlar</h2>
+    {% if low_stock %}
+    <ul class="card divide-y divide-line">
+      {% for p, stock in low_stock %}
+      <li><a href="{% url 'catalog:product_detail' p.pk %}" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-paper">
+        <span class="font-semibold">{{ p.name }}</span>
+        <span class="whitespace-nowrap text-sm tabular-nums"><b class="{% if stock <= 0 %}text-brick{% endif %}">{{ stock|qty }}</b> / {{ p.min_stock|qty }} {{ p.base_unit.short_name }}</span>
+      </a></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="card p-4 text-sm text-muted">Hozircha kam qolgan tovar yo'q. Tovarda «Minimal qoldiq» belgilansa, shu yerda ko'rinadi.</p>{% endif %}
+  </section>
+  {% if can_stock %}
+  <section>
+    <h2 class="mb-2 text-lg font-bold">So'nggi kirimlar</h2>
+    {% if recent_receipts %}
+    <ul class="card divide-y divide-line">
+      {% for r in recent_receipts %}
+      <li><a href="{% url 'inventory:receipt_detail' r.pk %}" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-paper">
+        <span><b>{{ r.number }}</b> <span class="text-sm text-muted">{{ r.supplier|default:"—" }}</span></span>
+        <span class="badge {% if r.is_draft %}bg-saffron-soft{% else %}bg-brand-soft text-brand-dark{% endif %}">{{ r.get_status_display }}</span>
+      </a></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="card p-4 text-sm text-muted">Kirim hujjati hali yo'q.</p>{% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

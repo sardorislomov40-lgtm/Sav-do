@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ count.number }}{% endblock %}
+{% block content %}
+<a href="{% url 'inventory:count_list' %}" class="text-sm font-semibold text-brand">← Inventarizatsiyalar</a>
+<div class="mb-5 mt-2">
+  <h1 class="h1">{{ count.number }} <span class="badge align-middle {% if editable %}bg-saffron-soft{% else %}bg-brand-soft text-brand-dark{% endif %}">{{ count.get_status_display }}</span></h1>
+  <p class="text-sm text-muted">{{ count.warehouse.name }} · tasdiqlanganda faqat ro'yxatdagi tovarlar qoldig'i sanoq bo'yicha tuzatiladi.</p>
+</div>
+
+{% if editable %}
+<div class="mb-4 grid gap-3 md:grid-cols-2">
+  <form hx-post="{% url 'inventory:count_scan' count.pk %}" hx-target="#lines" autocomplete="off"
+        hx-on::after-request="this.reset(); this.querySelector('input').focus()">
+    <label class="mb-1 block text-sm font-semibold" for="scan-code">Shtrix-kod (har skanerlash +1)</label>
+    <input id="scan-code" name="code" class="input scan" placeholder="Kursor shu yerda turganda skanerlang" autofocus>
+  </form>
+  <div class="relative">
+    <label class="mb-1 block text-sm font-semibold" for="product-q">Yoki nomi bo'yicha qidiring</label>
+    <input id="product-q" name="q" type="search" class="input py-3.5" placeholder="Kamida 2 ta harf" autocomplete="off"
+           hx-get="{% url 'catalog:product_search' %}" hx-vals='{"mode": "count", "doc": "{{ count.pk }}"}'
+           hx-trigger="input changed delay:250ms, search" hx-target="#search-results">
+    <div id="search-results" class="absolute inset-x-0 z-10 mt-1"></div>
+  </div>
+</div>
+{% endif %}
+
+<div id="lines">{% include "inventory/_count_lines.html" %}</div>
+
+{% if editable %}
+<div class="mt-6 flex flex-wrap gap-3">
+  <form method="post" action="{% url 'inventory:count_post' count.pk %}" onsubmit="return confirm('Qoldiq sanoq bo\'yicha tuzatilsinmi? Tasdiqlangach o\'zgartirib bo\'lmaydi.')">{% csrf_token %}<button class="btn btn-primary">Tasdiqlash va qoldiqni tuzatish</button></form>
+  <form method="post" action="{% url 'inventory:count_remove' count.pk %}" onsubmit="return confirm('Qoralama o\'chirilsinmi?')">{% csrf_token %}<button class="btn btn-danger">Qoralamani o'chirish</button></form>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Tovarlar{% endblock %}
+{% block content %}
+<div class="mb-4 flex items-center justify-between gap-3">
+  <h1 class="h1">Tovarlar</h1>
+  {% if can_stock %}<a class="btn btn-primary" href="{% url 'catalog:product_create' %}">Yangi tovar</a>{% endif %}
+</div>
+
+<form id="filters" class="mb-3 grid gap-2 md:grid-cols-[1fr_14rem_auto]"
+      hx-get="{% url 'catalog:product_list' %}" hx-target="#product-list" hx-push-url="true"
+      hx-trigger="input changed delay:300ms from:#q, change from:#category, change from:#archived, search from:#q">
+  <input id="q" name="q" type="search" value="{{ q }}" class="input" placeholder="Nomi, artikul yoki shtrix-kod" autocomplete="off">
+  <select id="category" name="category" class="input">
+    <option value="">Barcha kategoriyalar</option>
+    {% for c in categories %}<option value="{{ c.pk }}" {% if category == c.pk|stringformat:"s" %}selected{% endif %}>{{ c }}</option>{% endfor %}
+  </select>
+  <label class="flex items-center gap-2 px-1 text-sm font-semibold"><input id="archived" type="checkbox" name="archived" value="1" class="h-5 w-5 accent-brand" {% if archived %}checked{% endif %}> Arxivdagilar ham</label>
+</form>
+
+<form method="post" action="{% url 'catalog:labels_pdf' %}" target="_blank">
+  {% csrf_token %}
+  <div id="product-list">{% include "catalog/_product_list.html" %}</div>
+  <div class="card sticky bottom-20 mt-4 flex flex-wrap items-center gap-2 p-3 md:bottom-4">
+    <span class="text-sm font-semibold">Tanlanganlarga etiketka:</span>
+    <input type="number" name="copies" value="1" min="1" max="500" class="input w-20" aria-label="Nusxa soni">
+    <select name="layout" class="input w-auto" aria-label="Etiketka turi">
+      {% for key, l in layouts.items %}<option value="{{ key }}" {% if key == default_layout %}selected{% endif %}>{{ l.title }}</option>{% endfor %}
+    </select>
+    <button class="btn">PDF chiqarish</button>
+  </div>
+</form>
+{% endblock %}

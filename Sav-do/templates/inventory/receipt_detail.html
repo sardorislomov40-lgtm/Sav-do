@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ receipt.number }}{% endblock %}
+{% block content %}
+<a href="{% url 'inventory:receipt_list' %}" class="text-sm font-semibold text-brand">← Kirim hujjatlari</a>
+<div class="mb-5 mt-2 flex flex-wrap items-start justify-between gap-3">
+  <div>
+    <h1 class="h1">{{ receipt.number }} <span class="badge align-middle {% if editable %}bg-saffron-soft{% else %}bg-brand-soft text-brand-dark{% endif %}">{{ receipt.get_status_display }}</span></h1>
+    <p class="text-sm text-muted">{{ receipt.date|date:"d.m.Y" }} · {{ receipt.warehouse.name }}{% if receipt.supplier %} · {{ receipt.supplier }}{% endif %}{% if receipt.note %} · {{ receipt.note }}{% endif %}</p>
+  </div>
+</div>
+
+{% if editable %}
+<div class="mb-4 grid gap-3 md:grid-cols-2">
+  <form hx-post="{% url 'inventory:receipt_scan' receipt.pk %}" hx-target="#lines" autocomplete="off"
+        hx-on::after-request="this.reset(); this.querySelector('input').focus()">
+    <label class="mb-1 block text-sm font-semibold" for="scan-code">Shtrix-kod (skanerlang)</label>
+    <input id="scan-code" name="code" class="input scan" placeholder="Kursor shu yerda turganda skanerlang" autofocus>
+  </form>
+  <div class="relative">
+    <label class="mb-1 block text-sm font-semibold" for="product-q">Yoki nomi bo'yicha qidiring</label>
+    <input id="product-q" name="q" type="search" class="input py-3.5" placeholder="Kamida 2 ta harf" autocomplete="off"
+           hx-get="{% url 'catalog:product_search' %}" hx-vals='{"mode": "receipt", "doc": "{{ receipt.pk }}"}'
+           hx-trigger="input changed delay:250ms, search" hx-target="#search-results">
+    <div id="search-results" class="absolute inset-x-0 z-10 mt-1"></div>
+  </div>
+</div>
+{% endif %}
+
+<div id="lines">{% include "inventory/_receipt_lines.html" %}</div>
+
+<div class="mt-6 flex flex-wrap items-center gap-3">
+  {% if editable %}
+    <form method="post" action="{% url 'inventory:receipt_post' receipt.pk %}" onsubmit="return confirm('Kirim tasdiqlansinmi? Tasdiqlangach o\'zgartirib bo\'lmaydi.')">{% csrf_token %}<button class="btn btn-primary">Tasdiqlash va omborga kiritish</button></form>
+    <form method="post" action="{% url 'inventory:receipt_remove' receipt.pk %}" onsubmit="return confirm('Qoralama o\'chirilsinmi?')">{% csrf_token %}<button class="btn btn-danger">Qoralamani o'chirish</button></form>
+  {% else %}
+    <form method="post" action="{% url 'inventory:receipt_labels' receipt.pk %}" target="_blank" class="flex flex-wrap items-center gap-2">
+      {% csrf_token %}
+      <select name="layout" class="input w-auto" aria-label="Etiketka turi">{% for key, l in layouts.items %}<option value="{{ key }}" {% if key == default_layout %}selected{% endif %}>{{ l.title }}</option>{% endfor %}</select>
+      <button class="btn">Kelgan tovarlar uchun etiketka (PDF)</button>
+    </form>
+  {% endif %}
+</div>
+{% endblock %}

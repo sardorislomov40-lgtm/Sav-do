@@ -1,0 +1,10 @@
+<div class="{{ class }}">
+  {% if field.widget_type == 'checkbox' %}
+    <label class="flex items-center gap-3 py-2 text-sm font-semibold">{{ field }} <span>{{ field.label }}</span></label>
+  {% else %}
+    <label for="{{ field.id_for_label }}" class="mb-1 block text-sm font-semibold">{{ field.label }}</label>
+    {{ field }}
+  {% endif %}
+  {% if field.help_text %}<p class="mt-1 text-xs text-muted">{{ field.help_text }}</p>{% endif %}
+  {% for e in field.errors %}<p class="mt-1 text-sm font-semibold text-brick">{{ e }}</p>{% endfor %}
+</div>

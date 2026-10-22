@@ -1,0 +1,17 @@
+{% if products %}
+<ul class="card divide-y divide-line shadow-sm">
+  {% for p in products %}
+  <li>
+    <button type="button" class="flex min-h-[48px] w-full items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-paper"
+      hx-post="{% if mode == 'count' %}{% url 'inventory:count_add_product' doc %}{% else %}{% url 'inventory:receipt_add_product' doc %}{% endif %}"
+      hx-vals='{"product_id": "{{ p.pk }}"}' hx-target="#lines"
+      hx-on::after-request="document.getElementById('search-results').innerHTML=''; document.getElementById('product-q').value=''">
+      <span class="font-semibold">{{ p.name }}</span>
+      <span class="text-sm text-muted">{{ p.base_unit.short_name }}</span>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% elif q|length >= 2 %}
+<p class="px-1 py-2 text-sm text-muted">«{{ q }}» bo'yicha tovar topilmadi.</p>
+{% endif %}

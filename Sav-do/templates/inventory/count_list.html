@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Inventarizatsiya{% endblock %}
+{% block content %}
+<div class="mb-4 flex items-center justify-between gap-3">
+  <h1 class="h1">Inventarizatsiya</h1>
+  <a class="btn btn-primary" href="{% url 'inventory:count_create' %}">Yangi inventarizatsiya</a>
+</div>
+{% if page.object_list %}
+<ul class="card divide-y divide-line">
+  {% for c in page.object_list %}
+  <li><a href="{% url 'inventory:count_detail' c.pk %}" class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-paper">
+    <span><b>{{ c.number }}</b> <span class="text-sm text-muted">· {{ c.created_at|date:"d.m.Y H:i" }} · {{ c.warehouse.name }}</span></span>
+    <span class="badge {% if c.is_draft %}bg-saffron-soft{% else %}bg-brand-soft text-brand-dark{% endif %}">{{ c.get_status_display }}</span>
+  </a></li>
+  {% endfor %}
+</ul>
+{% include "partials/_pagination.html" %}
+{% else %}<p class="card p-6 text-center text-sm text-muted">Hali inventarizatsiya yo'q. Javonlardagi tovarni skaner bilan sanab, qoldiqni to'g'rilashingiz mumkin.</p>{% endif %}
+{% endblock %}

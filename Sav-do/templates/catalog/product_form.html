@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{% if product %}Tahrirlash{% else %}Yangi tovar{% endif %}{% endblock %}
+{% block content %}
+<a href="{% if product %}{% url 'catalog:product_detail' product.pk %}{% else %}{% url 'catalog:product_list' %}{% endif %}" class="text-sm font-semibold text-brand">← Orqaga</a>
+<h1 class="h1 mb-5 mt-2">{% if product %}{{ product.name }}{% else %}Yangi tovar{% endif %}</h1>
+
+<form method="post" class="space-y-6">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  <section class="card grid gap-4 p-4 md:grid-cols-2">
+    {% include "partials/_field.html" with field=form.name class="md:col-span-2" %}
+    {% include "partials/_field.html" with field=form.category %}
+    {% include "partials/_field.html" with field=form.base_unit %}
+    {% include "partials/_field.html" with field=form.sku %}
+    {% include "partials/_field.html" with field=form.min_stock %}
+    {% include "partials/_field.html" with field=form.note class="md:col-span-2" %}
+    {% include "partials/_field.html" with field=form.is_active %}
+  </section>
+
+  <section class="card p-4">
+    <h2 class="mb-3 font-bold">Narxlar (asosiy birlik uchun)</h2>
+    <div class="grid gap-4 md:grid-cols-2">
+      {% include "partials/_field.html" with field=form.retail_price %}
+      {% include "partials/_field.html" with field=form.wholesale_price %}
+    </div>
+  </section>
+
+  <section class="card p-4">
+    <h2 class="mb-1 font-bold">Qo'shimcha birliklar</h2>
+    <p class="mb-3 text-sm text-muted">Masalan, dona asosiy bo'lsa: Quti, koeffitsiyent 12. Kerak bo'lmasa, bo'sh qoldiring.</p>
+    {{ unit_fs.management_form }}{{ unit_fs.non_form_errors }}
+    <div class="space-y-3">
+      {% for f in unit_fs %}
+      <div class="grid grid-cols-2 gap-3 rounded-lg border border-line p-3 md:grid-cols-4">
+        {% for h in f.hidden_fields %}{{ h }}{% endfor %}{{ f.non_field_errors }}
+        {% include "partials/_field.html" with field=f.unit %}
+        {% include "partials/_field.html" with field=f.factor %}
+        {% include "partials/_field.html" with field=f.retail_price %}
+        {% include "partials/_field.html" with field=f.wholesale_price %}
+        {% if f.instance.pk %}<div class="col-span-2 md:col-span-4">{% include "partials/_field.html" with field=f.DELETE %}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card p-4">
+    <h2 class="mb-1 font-bold">Shtrix-kodlar</h2>
+    <p class="mb-3 text-sm text-muted">Zavod kodini skaner bilan o'qing yoki yozing. Quti kodi uchun avval yuqorida «Quti» birligini saqlang.</p>
+    {{ code_fs.management_form }}{{ code_fs.non_form_errors }}
+    <div class="space-y-3">
+      {% for f in code_fs %}
+      <div class="grid gap-3 rounded-lg border border-line p-3 md:grid-cols-2">
+        {% for h in f.hidden_fields %}{{ h }}{% endfor %}{{ f.non_field_errors }}
+        {% include "partials/_field.html" with field=f.code %}
+        {% include "partials/_field.html" with field=f.product_unit %}
+        {% if f.instance.pk %}{% include "partials/_field.html" with field=f.DELETE %}{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% if form.make_internal_code %}<div class="mt-3">{% include "partials/_field.html" with field=form.make_internal_code %}</div>{% endif %}
+  </section>
+
+  <div class="flex gap-3">
+    <button class="btn btn-primary">Saqlash</button>
+    <a class="btn" href="{% if product %}{% url 'catalog:product_detail' product.pk %}{% else %}{% url 'catalog:product_list' %}{% endif %}">Bekor qilish</a>
+  </div>
+</form>
+{% endblock %}
