@@ -1,8 +1,0 @@
-{% load sav_extras %}
-{% if page.paginator.num_pages > 1 %}
-<div class="mt-4 flex items-center justify-between text-sm">
-  {% if page.has_previous %}<a class="btn" href="{% page_url page.previous_page_number %}">Oldingi</a>{% else %}<span></span>{% endif %}
-  <span class="text-muted">{{ page.number }} / {{ page.paginator.num_pages }}</span>
-  {% if page.has_next %}<a class="btn" href="{% page_url page.next_page_number %}">Keyingi</a>{% else %}<span></span>{% endif %}
-</div>
-{% endif %}
