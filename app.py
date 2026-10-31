@@ -189,9 +189,10 @@ if not ss.user:
 user = ss.user
 st.markdown("""<style>
 [data-testid="stSidebar"]{background:#FFF4B8}
-[data-testid="stSidebar"] [role="radiogroup"] label{padding:7px 10px;border-radius:6px;font-size:1.05rem}
-[data-testid="stSidebar"] [role="radiogroup"] label:hover{background:#FFE98A}
-[data-testid="stSidebar"] [role="radiogroup"] label>div:first-child{display:none}
+[data-testid="stSidebar"] button{justify-content:flex-start;text-align:left;border:none;box-shadow:none}
+[data-testid="stSidebar"] button[kind="secondary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{background:transparent;color:#222}
+[data-testid="stSidebar"] button[kind="secondary"]:hover,[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover{background:#FFE98A}
+[data-testid="stSidebar"] button[kind="primary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{background:#FFD84D;color:#111;font-weight:600}
 </style>""", unsafe_allow_html=True)
 st.sidebar.markdown(f"👤 **{user['name']}**  \n{ROLES[user['role']]}")
 if st.sidebar.button("🚪 Chiqish"):
@@ -211,13 +212,30 @@ for icon, name, subs in NAV:
     if subs:
         sections.append((f"{icon}  {name}", subs))
 sec_map = dict(sections)
-sec = st.sidebar.radio("Menyu", list(sec_map), label_visibility="collapsed")
-subs = sec_map[sec]
-if len(subs) > 1:
-    pk = st.radio("Ichki bo'lim", [x[0] for x in subs], horizontal=True, key=f"sub_{sec}", label_visibility="collapsed")
-else:
-    pk = subs[0][0]
-menu = dict(subs)[pk]
+def go(sec_, sub_):
+    ss.nav_sec, ss.nav_sub = sec_, sub_
+
+
+def nbtn(label, key, active, sec_, sub_):
+    kw = dict(key=key, type="primary" if active else "secondary", on_click=go, args=(sec_, sub_))
+    try:
+        st.sidebar.button(label, width="stretch", **kw)
+    except Exception:
+        st.sidebar.button(label, use_container_width=True, **kw)
+
+
+if ss.get("nav_sec") not in sec_map:
+    ss.nav_sec = list(sec_map)[0]
+if ss.get("nav_sub") not in [x[1] for x in sec_map[ss.nav_sec]]:
+    ss.nav_sub = sec_map[ss.nav_sec][0][1]
+for label, subs_ in sections:
+    is_act = label == ss.nav_sec
+    nbtn(label, f"sec_{label}", is_act, label, subs_[0][1])
+    if is_act and len(subs_) > 1:  # tanlangan bo'lim tagida ichki bo'limlar ochiladi
+        for nm, k_ in subs_:
+            nbtn("\u00a0\u00a0\u00a0\u00a0↳ " + nm, f"sub_{k_}", k_ == ss.nav_sub, label, k_)
+menu = ss.nav_sub
+pk = next(n for n, k_ in sec_map[ss.nav_sec] if k_ == menu)
 st.subheader(pk)
 
 
@@ -317,7 +335,7 @@ if menu == "pos":
     accs = acc_balances()
     c1, c2 = st.columns([3, 2])
     with c1:
-        st.text_input("📷 Shtrix-kod / 2D (DataMatrix) kodni skanerlang", key="scan", on_change=on_scan)
+        st.text_input("📷 Skaner: shtrix-kod yoki markirovka kodi (ixtiyoriy)", key="scan", on_change=on_scan)
         if ss.msg:
             getattr(st, ss.msg[0])(ss.msg[1])
             ss.msg = None
