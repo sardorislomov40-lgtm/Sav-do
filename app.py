@@ -72,11 +72,23 @@ def check_pw(pw, stored):
 
 RN = {"id": "ID", "name": "Tovar", "unit": "Birlik", "price": "Narx", "stock": "Qoldiq"}
 ROLES = {"admin": "Administrator", "kassir": "Kassir", "omborchi": "Omborchi"}
-MENU = {
-    "admin": ["🛒 Kassa", "📦 Tovarlar", "📥 Omborga kirim", "📊 Hisobotlar", "👥 Foydalanuvchilar"],
-    "kassir": ["🛒 Kassa"],
-    "omborchi": ["📦 Tovarlar", "📥 Omborga kirim"],
-}
+NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti yoki None = tez orada)])
+    ("🏠", "Asosiy", [("Boshqaruv paneli", "🏠 Panel")]),
+    ("📈", "Rahbarga", [("Foyda va zarar", None), ("Savdo dinamikasi", None)]),
+    ("🏦", "Bank va kassa", [("Kassa daftari", None), ("Bank hisobvaraqlari", None), ("Nasiya to'lovlari", None)]),
+    ("🛍️", "Sotuvlar", [("Kassa (POS)", "🛒 Kassa"), ("Sotuv hujjatlari", None), ("Mijozlar", None), ("Buyurtmalar", None)]),
+    ("🛒", "Xaridlar", [("Omborga kirim", "📥 Omborga kirim"), ("Yetkazib beruvchilar", None), ("Xarid buyurtmalari", None)]),
+    ("📦", "Ombor", [("Tovarlar", "📦 Tovarlar"), ("Qoldiqlar", None), ("Inventarizatsiya", None), ("Ko'chirish", None)]),
+    ("🏷️", "Markirovka", [("Shtrix-kodlar", None), ("Yorliq chop etish", None)]),
+    ("🏭", "Ishlab chiqarish", [("Ishlab chiqarish buyurtmalari", None)]),
+    ("🏗️", "Asosiy vositalar", [("Asosiy vositalar", None), ("Nomoddiy aktivlar", None)]),
+    ("👷", "Ish haqi va kadrlar", [("Xodimlar", None), ("Ish haqi hisobi", None)]),
+    ("🧾", "Operatsiyalar", [("Qo'lda operatsiyalar", None)]),
+    ("📄", "Elektron hujjatlar", [("Soliq / Didox hujjatlari", None)]),
+    ("📊", "Hisobotlar", [("Savdo hisoboti", "📊 Hisobotlar"), ("Nasiya qarzlari", None)]),
+    ("⚙️", "Sozlamalar", [("Foydalanuvchilar", "👥 Foydalanuvchilar")]),
+]
+ALLOWED = {"kassir": {"🛒 Kassa"}, "omborchi": {"📦 Tovarlar", "📥 Omborga kirim"}}
 ss = st.session_state
 ss.setdefault("user", None)
 ss.setdefault("cart", [])
@@ -122,7 +134,31 @@ if st.sidebar.button("🚪 Chiqish"):
     ss.user = None
     ss.cart = []
     st.rerun()
-menu = st.sidebar.radio("Bo'lim", MENU[user["role"]])
+st.markdown("""<style>
+[data-testid="stSidebar"]{background:#FFF4B8}
+[data-testid="stSidebar"] [role="radiogroup"] label{padding:7px 10px;border-radius:6px;font-size:1.05rem}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover{background:#FFE98A}
+[data-testid="stSidebar"] [role="radiogroup"] label>div:first-child{display:none}
+</style>""", unsafe_allow_html=True)
+
+
+def ok(k):
+    return user["role"] == "admin" or k in ALLOWED.get(user["role"], set())
+
+
+sections = []
+for icon, name, subs in NAV:
+    subs = [x for x in subs if ok(x[1])]
+    if subs:
+        sections.append((f"{icon}  {name}", subs))
+sec_map = dict(sections)
+sec = st.sidebar.radio("Menyu", list(sec_map), label_visibility="collapsed")
+subs = sec_map[sec]
+if len(subs) > 1:
+    pick = st.radio("Ichki bo'lim", [x[0] for x in subs], horizontal=True, key=f"sub_{sec}", label_visibility="collapsed")
+else:
+    pick = subs[0][0]
+menu = dict(subs)[pick]
 
 # ---------------------------------------------------------------- KASSA
 if menu == "🛒 Kassa":
@@ -298,3 +334,22 @@ elif menu == "👥 Foydalanuvchilar":
                 st.success("Saqlandi.")
     with top:
         show_df(q("SELECT username AS login, full_name AS ism, role AS rol, active AS faol FROM users ORDER BY id"))
+
+# ---------------------------------------------------------------- PANEL
+elif menu == "🏠 Panel":
+    st.subheader("🏠 Boshqaruv paneli")
+    sales = q("SELECT * FROM sales ORDER BY id DESC")
+    prods = q("SELECT * FROM products")
+    today = sales[sales["created"].str[:10] == now()[:10]] if not sales.empty else sales
+    a, b, c, d = st.columns(4)
+    a.metric("Bugungi savdo", f"{today['total'].sum():,.0f} so'm")
+    b.metric("Bugungi cheklar", len(today))
+    c.metric("Tovar turlari", len(prods))
+    d.metric("Qoldig'i kam (≤ 5)", int((prods["stock"] <= 5).sum()) if not prods.empty else 0)
+    st.markdown("**Oxirgi cheklar**")
+    show_df(sales.head(10).rename(columns={"id": "№", "created": "Vaqt", "cashier": "Kassir", "payment": "To'lov", "customer": "Mijoz", "total": "Summa"}))
+
+# ---------------------------------------------------------------- TEZ ORADA
+else:
+    st.subheader(pick)
+    st.info("🚧 Bu bo'lim tez orada qo'shiladi.")
