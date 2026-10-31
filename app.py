@@ -2,8 +2,11 @@ import hashlib
 import secrets
 from datetime import date, datetime, timedelta, timezone
 
+import html
+
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from sqlalchemy import bindparam, create_engine, text
 
 st.set_page_config(page_title="Sav-do ERP", page_icon="🛒", layout="wide")
@@ -31,7 +34,7 @@ def init_db():
     tables = [
         f"users (id {PK}, username TEXT UNIQUE NOT NULL, full_name TEXT, pw TEXT NOT NULL, role TEXT NOT NULL, active INTEGER DEFAULT 1)",
         f"products (id {PK}, name TEXT NOT NULL, unit TEXT, price {D}, stock {D} DEFAULT 0, barcode TEXT, marked INTEGER DEFAULT 0, cost {D} DEFAULT 0, active INTEGER DEFAULT 1)",
-        f"sales (id {PK}, created TEXT, cashier TEXT, payment TEXT, customer TEXT, total {D}, partner_id INTEGER)",
+        f"sales (id {PK}, created TEXT, cashier TEXT, payment TEXT, customer TEXT, total {D}, partner_id INTEGER, paid {D}, debt {D}, given {D}, change_amt {D}, account_id INTEGER)",
         f"sale_items (id {PK}, sale_id INTEGER, product_id INTEGER, name TEXT, qty {D}, price {D}, codes TEXT)",
         f"partners (id {PK}, name TEXT NOT NULL, phone TEXT, kind TEXT NOT NULL)",
         f"accounts (id {PK}, name TEXT NOT NULL, kind TEXT NOT NULL, number TEXT, opening {D} DEFAULT 0, active INTEGER DEFAULT 1)",
@@ -47,7 +50,7 @@ def init_db():
             c.execute(text("CREATE TABLE IF NOT EXISTS " + t))
     # eski bazalar uchun yangi ustunlar
     for t, col in [("products", "barcode TEXT"), ("products", "marked INTEGER DEFAULT 0"), ("products", f"cost {D} DEFAULT 0"),
-                   ("products", "active INTEGER DEFAULT 1"), ("sales", "partner_id INTEGER"), ("sale_items", "codes TEXT")]:
+                   ("products", "active INTEGER DEFAULT 1"), ("sales", "partner_id INTEGER"), ("sales", f"paid {D}"), ("sales", f"debt {D}"), ("sales", f"given {D}"), ("sales", f"change_amt {D}"), ("sales", "account_id INTEGER"), ("sale_items", "codes TEXT")]:
         try:
             with ENGINE.begin() as c:
                 c.execute(text(f"ALTER TABLE {t} ADD COLUMN {col}"))
@@ -136,7 +139,7 @@ RN_P = {"id": "ID", "name": "Tovar", "unit": "Birlik", "price": "Sotuv narxi", "
 ROLES = {"admin": "Administrator", "kassir": "Kassir", "omborchi": "Omborchi"}
 NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti)])
     ("🏠", "Asosiy", [("Boshqaruv paneli", "panel")]),
-    ("🏦", "Bank va kassa", [("Hisoblar", "hisob"), ("To'lovlar", "tolov"), ("Harakatlar", "harakat")]),
+    ("🏦", "Bank va kassa", [("Hisoblar", "hisob"), ("To'lovlar", "tolov"), ("Harakatlar", "harakat"), ("Kassa tahlili", "kassa")]),
     ("🛍️", "Sotuvlar", [("Kassa (POS)", "pos"), ("Sotuvlar ro'yxati", "sotuvlar"), ("Mijozlar", "mijoz")]),
     ("🛒", "Xaridlar", [("Omborga kirim", "kirim"), ("Kirim hujjatlari", "kirimlar"), ("Yetkazib beruvchilar", "taminot")]),
     ("📦", "Ombor", [("Qoldiqlar", "qoldiq"), ("Tovarlar", "tovar"), ("Markirovka kodlari", "kodlar")]),
@@ -219,6 +222,43 @@ st.subheader(pk)
 
 
 # ================================================================ SAHIFALAR
+SALES_SQL = """SELECT *, COALESCE(paid, CASE WHEN payment='Nasiya' THEN 0 ELSE total END) AS paid_,
+    COALESCE(debt, CASE WHEN payment='Nasiya' THEN total ELSE 0 END) AS debt_ FROM sales"""
+
+
+def build_receipt(sid):
+    s_ = q("""SELECT s.*, a.name AS acc_name, a.number AS acc_number FROM sales s
+              LEFT JOIN accounts a ON a.id=s.account_id WHERE s.id=:i""", i=int(sid)).iloc[0]
+    items = q("SELECT name,qty,price FROM sale_items WHERE sale_id=:i", i=int(sid))
+    W = 32
+    paid = s_["paid"] if pd.notna(s_["paid"]) else (0 if s_["payment"] == "Nasiya" else s_["total"])
+    debt = s_["debt"] if pd.notna(s_["debt"]) else (s_["total"] if s_["payment"] == "Nasiya" else 0)
+    L = ["SAV-DO".center(W), f"Chek №{sid}".center(W), str(s_["created"]), f"Kassir: {s_['cashier']}", "-" * W]
+    for _, r in items.iterrows():
+        L += [r["name"], f"{r['qty']:g} x {r['price']:,.0f} = {r['qty'] * r['price']:,.0f}".rjust(W)]
+    L += ["-" * W, f"JAMI: {s_['total']:,.0f} so'm"]
+    if paid > 0:
+        if s_["payment"] == "Karta":
+            num = (s_["acc_number"] or "")[-4:]
+            L.append(f"Karta: {s_['acc_name'] or ''} {'**** ' + num if num else ''}".strip())
+        else:
+            L.append(f"Naqd: {s_['acc_name'] or 'kassa'}")
+        L.append(f"To'langan: {paid:,.0f} so'm")
+        if s_["payment"] == "Naqd" and pd.notna(s_["given"]) and s_["given"] > 0:
+            L += [f"Berildi: {s_['given']:,.0f} so'm", f"Qaytim: {(s_['change_amt'] or 0):,.0f} so'm"]
+    if debt > 0:
+        L += [f"NASIYA (qarz): {debt:,.0f} so'm", f"Mijoz: {s_['customer'] or ''}"]
+    L += ["-" * W, "Xaridingiz uchun rahmat!".center(W)]
+    return "\n".join(L)
+
+
+def show_receipt(txt):
+    h = (f'<pre style="font-family:monospace;font-size:13px;background:#fff;border:1px dashed #999;padding:8px;width:290px;margin:0 0 8px">{html.escape(txt)}</pre>'
+         '<button onclick="window.print()" style="padding:6px 14px;cursor:pointer">🖨️ Chop etish</button>')
+    components.html(h, height=70 + 19 * (txt.count("\n") + 1))
+    st.download_button("⬇️ Chekni yuklab olish (.txt)", txt.encode("utf-8"), file_name="chek.txt")
+
+
 def partners_page(kind):
     top = st.container()
     with st.form("np_" + kind, clear_on_submit=True):
@@ -274,64 +314,94 @@ def on_scan():
 
 if menu == "pos":
     prods = q("SELECT * FROM products WHERE active=1 ORDER BY name")
-    c1, c2 = st.columns([2, 1])
+    accs = acc_balances()
+    c1, c2 = st.columns([3, 2])
     with c1:
         st.text_input("📷 Shtrix-kod / 2D (DataMatrix) kodni skanerlang", key="scan", on_change=on_scan)
         if ss.msg:
             getattr(st, ss.msg[0])(ss.msg[1])
             ss.msg = None
-        s = st.text_input("🔍 Nomi bo'yicha qidirish")
-        view = prods[prods["name"].str.contains(s, case=False, na=False)] if s and not prods.empty else prods
-        v = view.copy()
-        if not v.empty:
-            v["marked"] = v["marked"].map(lambda x: "Ha" if x else "")
-            show_df(v[["name", "unit", "price", "stock", "marked"]], {"name": "Tovar", "unit": "Birlik", "price": "Narx", "stock": "Qoldiq", "marked": "Markirovka"})
-            plain = view[view["marked"] == 0]
-            if not plain.empty:
-                pid = pick("Markirovkasiz tovarni qo'lda qo'shish:", plain, "id", "name")
-                qty = st.number_input("Miqdori:", min_value=0.01, value=1.0, step=0.5)
-                if st.button("➕ Savatga qo'shish", type="primary"):
-                    t = plain[plain["id"] == pid].iloc[0]
-                    have = sum(i["qty"] for i in ss.cart if i["id"] == pid)
-                    if have + qty > t["stock"]:
-                        st.error(f"Omborda yetarli emas. Qoldiq: {t['stock']:g}, savatda: {have:g}")
-                    else:
-                        for i in ss.cart:
-                            if i["id"] == pid:
-                                i["qty"] += qty
-                                break
-                        else:
-                            ss.cart.append({"id": int(pid), "name": t["name"], "price": float(t["price"]), "qty": qty, "marked": False, "codes": []})
-                        st.rerun()
-        else:
+        if prods.empty:
             st.info("Tovarlar yo'q. Ombor → Tovarlar va Xaridlar → Omborga kirim orqali kiriting.")
+        else:
+            names = {int(r["id"]): f"{r['name']}   |   qoldiq: {r['stock']:g} {r['unit'] or ''}   |   {r['price']:,.0f} so'm" + ("   |   🏷️ markirovka" if r["marked"] else "")
+                     for _, r in prods.iterrows()}
+            pid = st.selectbox("🔍 Tovar (nomini yozib qidiring):", [None] + list(names), format_func=lambda x: "— tanlang —" if x is None else names[x])
+            if pid:
+                p = prods[prods["id"] == pid].iloc[0]
+                incart = sum(i["qty"] for i in ss.cart if i["id"] == pid)
+                a, b, c = st.columns(3)
+                a.metric("Omborda", f"{p['stock']:g} {p['unit'] or ''}")
+                b.metric("Narxi", m(p["price"]))
+                c.metric("Savatdan keyin qoladi", f"{p['stock'] - incart:g}")
+                if p["stock"] - incart <= 0:
+                    st.error("Omborda qolmagan.")
+                if p["marked"]:
+                    st.warning("Markirovkali tovar: 2D (DataMatrix) kodni skanerlang.")
+                else:
+                    qty = st.number_input("Miqdori:", min_value=0.01, value=1.0, step=1.0, key=f"q_{pid}")
+                    if st.button("➕ Savatga qo'shish", type="primary"):
+                        if incart + qty > p["stock"]:
+                            st.error(f"Omborda yetarli emas. Qoldiq: {p['stock']:g}, savatda: {incart:g}")
+                        else:
+                            for i in ss.cart:
+                                if i["id"] == pid:
+                                    i["qty"] += qty
+                                    break
+                            else:
+                                ss.cart.append({"id": int(pid), "name": p["name"], "price": float(p["price"]), "qty": qty, "marked": False, "codes": []})
+                            st.rerun()
     with c2:
         st.markdown("### 🛍️ Savat")
         if ss.cart:
             cart = pd.DataFrame(ss.cart)
             cart["jami"] = cart["price"] * cart["qty"]
-            show_df(cart[["name", "qty", "jami"]], {"name": "Tovar", "qty": "Miqdor", "jami": "Jami"})
+            show_df(cart[["name", "qty", "price", "jami"]], {"name": "Tovar", "qty": "Miqdor", "price": "Narx", "jami": "Jami"})
             total = float(cart["jami"].sum())
-            st.markdown(f"### Jami: **{m(total)}**")
-            pay = st.radio("To'lov turi:", ["Naqd", "Karta", "Nasiya"], horizontal=True)
-            pid_c, cname = None, ""
-            if pay == "Nasiya":
+            st.markdown(f"## Jami: **{m(total)}**")
+            nas = st.checkbox("🧾 Nasiyaga (qarzga) sotish")
+            pid_c, cname, due = None, "", total
+            if nas:
                 custs = q("SELECT id,name FROM partners WHERE kind='Mijoz' ORDER BY name")
                 pid_c = pick("Mijoz:", custs, "id", "name", none="— tanlang —")
                 nn = st.text_input("yoki yangi mijoz ismi")
                 if nn.strip() and pid_c is None:
                     cname = nn.strip()
-            if st.button("✅ Yakunlash (chek)", type="primary"):
-                if pay == "Nasiya" and pid_c is None and not cname:
+                due = st.number_input("Hozir to'lanadigan summa (qolgani nasiya):", min_value=0.0, max_value=total, value=0.0, step=1000.0)
+                st.markdown(f"Nasiya (qarz): **{m(total - due)}**")
+            method, acc, given, change, blocked = None, None, 0.0, 0.0, False
+            if due > 0:
+                method = st.radio("To'lov turi:", ["Naqd", "Karta"], horizontal=True)
+                kind = "Naqd kassa" if method == "Naqd" else "Karta"
+                ak = accs[accs["kind"] == kind].copy() if not accs.empty else accs
+                if ak.empty:
+                    st.error(f"«{kind}» hisobi yo'q. Bank va kassa → Hisoblar da qo'shing.")
+                    blocked = True
+                else:
+                    ak["label"] = ak.apply(lambda r: r["name"] + (f" (**** {r['number'][-4:]})" if method == "Karta" and r["number"] else ""), axis=1)
+                    acc = pick("Naqd kassa:" if method == "Naqd" else "Qaysi karta:", ak, "id", "label")
+                if method == "Naqd":
+                    given = st.number_input("💵 Mijoz bergan summa:", min_value=0.0, value=float(due), step=1000.0, key=f"given_{int(due)}")
+                    change = given - due
+                    if change >= 0:
+                        st.success(f"💰 Qaytim: {m(change)}")
+                    else:
+                        st.error(f"Yetishmayapti: {m(-change)}")
+                        blocked = True
+            if st.button("✅ Sotuvni yakunlash (chek)", type="primary", disabled=blocked):
+                if nas and pid_c is None and not cname:
                     st.error("Nasiya uchun mijozni tanlang yoki yangi mijoz ismini kiriting.")
                 else:
                     try:
+                        debt = total - due
                         with ENGINE.begin() as c:
-                            if pay == "Nasiya" and pid_c is None:
+                            if nas and pid_c is None:
                                 pid_c = c.execute(text("INSERT INTO partners (name,kind) VALUES (:n,'Mijoz') RETURNING id"), {"n": cname}).scalar()
                             cn = c.execute(text("SELECT name FROM partners WHERE id=:i"), {"i": pid_c}).scalar() if pid_c else ""
-                            sid = c.execute(text("INSERT INTO sales (created,cashier,payment,customer,total,partner_id) VALUES (:t,:u,:p,:c,:s,:pi) RETURNING id"),
-                                            {"t": now(), "u": user["username"], "p": pay, "c": cn, "s": total, "pi": pid_c}).scalar()
+                            sid = c.execute(text("""INSERT INTO sales (created,cashier,payment,customer,total,partner_id,paid,debt,given,change_amt,account_id)
+                                                    VALUES (:t,:u,:p,:c,:s,:pi,:pd,:db,:g,:ch,:a) RETURNING id"""),
+                                            {"t": now(), "u": user["username"], "p": method or "Nasiya", "c": cn, "s": total, "pi": pid_c, "pd": due, "db": debt,
+                                             "g": given if method == "Naqd" else 0, "ch": max(change, 0) if method == "Naqd" else 0, "a": acc}).scalar()
                             for i in ss.cart:
                                 r = c.execute(text("UPDATE products SET stock = stock - :q WHERE id=:i AND stock >= :q"), {"q": i["qty"], "i": i["id"]})
                                 if r.rowcount == 0:
@@ -343,19 +413,14 @@ if menu == "pos":
                                         raise ValueError(f"{i['name']}: kod omborda yo'q")
                                 c.execute(text("INSERT INTO sale_items (sale_id,product_id,name,qty,price,codes) VALUES (:s,:p,:n,:q,:pr,:cd)"),
                                           {"s": sid, "p": i["id"], "n": i["name"], "q": i["qty"], "pr": i["price"], "cd": ",".join(i["codes"])})
-                            if pay == "Nasiya":
+                            if debt > 0:
                                 c.execute(text("INSERT INTO ledger (created,partner_id,amount,doc,note,user_name) VALUES (:t,:p,:a,:d,'Nasiya savdo',:u)"),
-                                          {"t": now(), "p": pid_c, "a": total, "d": f"Sotuv №{sid}", "u": user["username"]})
-                            else:
-                                acc = c.execute(text("SELECT id FROM accounts WHERE kind=:k AND active=1 ORDER BY id LIMIT 1"), {"k": "Naqd kassa" if pay == "Naqd" else "Karta"}).scalar()
-                                if acc:
-                                    c.execute(text("INSERT INTO cash_moves (created,account_id,amount,doc,note,user_name) VALUES (:t,:a,:s,:d,'Savdo tushumi',:u)"),
-                                              {"t": now(), "a": acc, "s": total, "d": f"Sotuv №{sid}", "u": user["username"]})
-                        lines = [f"SAV-DO   Chek №{sid}", now(), f"Kassir: {user['name']}", "-" * 30]
-                        lines += [f"{i['name']}\n  {i['qty']:g} x {i['price']:,.0f} = {i['qty'] * i['price']:,.0f}" for i in ss.cart]
-                        lines += ["-" * 30, f"JAMI: {m(total)}", f"To'lov: {pay}" + (f" ({cn})" if pay == "Nasiya" else "")]
-                        ss.receipt = "\n".join(lines)
-                        log("Sotuv", f"№{sid}, {m(total)}, {pay}")
+                                          {"t": now(), "p": pid_c, "a": debt, "d": f"Sotuv №{sid}", "u": user["username"]})
+                            if due > 0:  # kassaga faqat sof tushum (qaytim ayirilgan) yoziladi
+                                c.execute(text("INSERT INTO cash_moves (created,account_id,amount,doc,note,user_name) VALUES (:t,:a,:s,:d,:n,:u)"),
+                                          {"t": now(), "a": acc, "s": due, "d": f"Sotuv №{sid}", "n": f"Savdo tushumi ({method})", "u": user["username"]})
+                        ss.receipt = build_receipt(sid)
+                        log("Sotuv", f"№{sid}, {m(total)}, {method or 'Nasiya'}" + (f", nasiya {m(debt)}" if debt > 0 else ""))
                         ss.cart = []
                         st.rerun()
                     except Exception as e:
@@ -375,17 +440,18 @@ if menu == "pos":
                 ss.cart = []
                 st.rerun()
         else:
-            st.info("Savat bo'sh. Tovar kodini skanerlang.")
+            st.info("Savat bo'sh. Tovarni tanlang yoki kodini skanerlang.")
         if ss.receipt:
             st.markdown("**Oxirgi chek:**")
-            st.code(ss.receipt)
+            show_receipt(ss.receipt)
 
 elif menu == "sotuvlar":
-    sales = q("SELECT id,created,cashier,payment,customer,total FROM sales ORDER BY id DESC LIMIT 200")
-    show_df(sales, {"id": "№", "created": "Vaqt", "cashier": "Kassir", "payment": "To'lov", "customer": "Mijoz", "total": "Summa"})
+    sales = q("SELECT id,created,cashier,payment,customer,total,COALESCE(paid, CASE WHEN payment='Nasiya' THEN 0 ELSE total END) AS paid_, COALESCE(debt, CASE WHEN payment='Nasiya' THEN total ELSE 0 END) AS debt_ FROM sales ORDER BY id DESC LIMIT 200")
+    show_df(sales, {"id": "№", "created": "Vaqt", "cashier": "Kassir", "payment": "To'lov", "customer": "Mijoz", "total": "Summa", "paid_": "To'langan", "debt_": "Nasiya (qarz)"})
     if not sales.empty:
         sid = st.selectbox("Chek tarkibi:", sales["id"].tolist())
         show_df(q("SELECT name,qty,price,codes FROM sale_items WHERE sale_id=:s", s=int(sid)), {"name": "Tovar", "qty": "Miqdor", "price": "Narx", "codes": "Markirovka kodlari"})
+        show_receipt(build_receipt(sid))
 
 elif menu == "mijoz":
     partners_page("Mijoz")
@@ -643,16 +709,59 @@ elif menu == "harakat":
     d = q(sql + (" WHERE k.account_id=:a" if aid else "") + " ORDER BY k.id DESC LIMIT 300", **({"a": int(aid)} if aid else {}))
     show_df(d, {"created": "Vaqt", "acc": "Hisob", "doc": "Hujjat", "note": "Izoh", "partner": "Kontragent", "amount": "Summa (+kirim / −chiqim)", "user_name": "Kim"})
 
+elif menu == "kassa":
+    c1, c2 = st.columns(2)
+    d1 = c1.date_input("Boshlanish", value=date.today().replace(day=1), key="kd1")
+    d2 = c2.date_input("Tugash", value=date.today(), key="kd2")
+    st0, en = f"{d1} 00:00:00", f"{d2} 23:59:59"
+    ab = q("SELECT id,name,kind,opening FROM accounts WHERE active=1 ORDER BY id")
+    mv = q("SELECT account_id, created, amount FROM cash_moves")
+    if ab.empty:
+        st.info("Hisoblar yo'q. Bank va kassa → Hisoblar da qo'shing.")
+    else:
+        rows = []
+        for _, a_ in ab.iterrows():
+            x = mv[mv["account_id"] == a_["id"]]
+            op = a_["opening"] + x.loc[x["created"] < st0, "amount"].sum()
+            per = x[(x["created"] >= st0) & (x["created"] <= en)]
+            kir, chi = per.loc[per["amount"] > 0, "amount"].sum(), -per.loc[per["amount"] < 0, "amount"].sum()
+            rows.append({"Hisob": a_["name"], "Turi": a_["kind"], "Davr boshida": op, "Kirim": kir, "Chiqim": chi, "Davr oxirida": op + kir - chi})
+        t = pd.DataFrame(rows)
+        a, b, c = st.columns(3)
+        a.metric("Jami kirim", m(t["Kirim"].sum()))
+        b.metric("Jami chiqim", m(t["Chiqim"].sum()))
+        c.metric("Hozirgi jami pul", m(acc_balances()["balance"].sum()))
+        show_df(t)
+    sl = q(SALES_SQL + " WHERE created >= :a AND created <= :b", a=st0, b=en)
+    st.markdown("**Savdo tahlili (shu davr)**")
+    a, b, c, d, e = st.columns(5)
+    a.metric("Savdo jami", m(sl["total"].sum()))
+    b.metric("Naqd tushum", m(sl.loc[sl["payment"] == "Naqd", "paid_"].sum()))
+    c.metric("Karta tushum", m(sl.loc[sl["payment"] == "Karta", "paid_"].sum()))
+    d.metric("Nasiyaga sotildi", m(sl["debt_"].sum()))
+    e.metric("Qaytim berildi", m(sl["change_amt"].fillna(0).sum()))
+    if not mv.empty:
+        dd = mv[(mv["created"] >= st0) & (mv["created"] <= en)].copy()
+        if not dd.empty:
+            dd["Kun"] = dd["created"].str[:10]
+            dd["Kirim"] = dd["amount"].clip(lower=0)
+            dd["Chiqim"] = (-dd["amount"]).clip(lower=0)
+            st.markdown("**Kunlar bo'yicha (barcha hisoblar)**")
+            show_df(dd.groupby("Kun")[["Kirim", "Chiqim"]].sum().reset_index())
+
 elif menu == "hisobot":
     c1, c2 = st.columns(2)
     d1 = c1.date_input("Boshlanish", value=date.today().replace(day=1))
     d2 = c2.date_input("Tugash", value=date.today())
-    sl = q("SELECT * FROM sales WHERE created >= :a AND created <= :b", a=f"{d1} 00:00:00", b=f"{d2} 23:59:59")
-    a, b = st.columns(2)
+    sl = q(SALES_SQL + " WHERE created >= :a AND created <= :b", a=f"{d1} 00:00:00", b=f"{d2} 23:59:59")
+    a, b, c = st.columns(3)
     a.metric("Savdo summasi", m(sl["total"].sum()))
     b.metric("Cheklar soni", len(sl))
+    c.metric("Shundan nasiya", m(sl["debt_"].sum()))
     if not sl.empty:
-        show_df(sl.groupby("payment")["total"].sum().reset_index(), {"payment": "To'lov turi", "total": "Summa"})
+        pm = sl[sl["paid_"] > 0].groupby("payment")["paid_"].sum()
+        rows = [{"To'lov turi": k, "Summa": v} for k, v in pm.items()] + [{"To'lov turi": "Nasiya (qarz)", "Summa": sl["debt_"].sum()}]
+        show_df(pd.DataFrame(rows))
         show_df(sl.groupby("cashier")["total"].agg(["count", "sum"]).reset_index(), {"cashier": "Kassir", "count": "Cheklar", "sum": "Summa"})
         top = q("""SELECT si.name, SUM(si.qty) AS qty, SUM(si.qty*si.price) AS sm FROM sale_items si JOIN sales s ON s.id=si.sale_id
                    WHERE s.created >= :a AND s.created <= :b GROUP BY si.name ORDER BY sm DESC LIMIT 20""", a=f"{d1} 00:00:00", b=f"{d2} 23:59:59")
