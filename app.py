@@ -41,7 +41,7 @@ def init_db():
         f"cash_moves (id {PK}, created TEXT, account_id INTEGER, amount {D}, partner_id INTEGER, doc TEXT, note TEXT, user_name TEXT)",
         f"ledger (id {PK}, created TEXT, partner_id INTEGER, amount {D}, doc TEXT, note TEXT, user_name TEXT)",
         f"receipts (id {PK}, created TEXT, user_name TEXT, partner_id INTEGER, total {D}, paid {D}, note TEXT)",
-        f"receipt_items (id {PK}, receipt_id INTEGER, product_id INTEGER, name TEXT, qty {D}, cost {D})",
+        f"receipt_items (id {PK}, receipt_id INTEGER, product_id INTEGER, name TEXT, qty {D}, cost {D}, price {D})",
         f"mark_codes (id {PK}, product_id INTEGER, code TEXT UNIQUE NOT NULL, status TEXT, receipt_id INTEGER, sale_id INTEGER)",
         f"audit (id {PK}, created TEXT, user_name TEXT, action TEXT, details TEXT)",
     ]
@@ -50,7 +50,7 @@ def init_db():
             c.execute(text("CREATE TABLE IF NOT EXISTS " + t))
     # eski bazalar uchun yangi ustunlar
     for t, col in [("products", "barcode TEXT"), ("products", "marked INTEGER DEFAULT 0"), ("products", f"cost {D} DEFAULT 0"),
-                   ("products", "active INTEGER DEFAULT 1"), ("sales", "partner_id INTEGER"), ("sales", f"paid {D}"), ("sales", f"debt {D}"), ("sales", f"given {D}"), ("sales", f"change_amt {D}"), ("sales", "account_id INTEGER"), ("sale_items", "codes TEXT")]:
+                   ("products", "active INTEGER DEFAULT 1"), ("sales", "partner_id INTEGER"), ("sales", f"paid {D}"), ("sales", f"debt {D}"), ("sales", f"given {D}"), ("sales", f"change_amt {D}"), ("sales", "account_id INTEGER"), ("sale_items", "codes TEXT"), ("receipt_items", "price DOUBLE PRECISION")]:
         try:
             with ENGINE.begin() as c:
                 c.execute(text(f"ALTER TABLE {t} ADD COLUMN {col}"))
@@ -142,11 +142,11 @@ NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti)])
     ("🏦", "Bank va kassa", [("Hisoblar", "hisob"), ("To'lovlar", "tolov"), ("Harakatlar", "harakat"), ("Kassa tahlili", "kassa")]),
     ("🛍️", "Sotuvlar", [("Kassa (POS)", "pos"), ("Sotuvlar ro'yxati", "sotuvlar"), ("Mijozlar", "mijoz")]),
     ("🛒", "Xaridlar", [("Omborga kirim", "kirim"), ("Kirim hujjatlari", "kirimlar"), ("Yetkazib beruvchilar", "taminot")]),
-    ("📦", "Ombor", [("Qoldiqlar", "qoldiq"), ("Tovarlar", "tovar"), ("Markirovka kodlari", "kodlar")]),
+    ("📦", "Ombor", [("Qoldiqlar", "qoldiq"), ("Kirim jurnali", "jurnal"), ("Tovarlar", "tovar"), ("Markirovka kodlari", "kodlar")]),
     ("📊", "Hisobotlar", [("Savdo hisoboti", "hisobot"), ("Qarzdorlik", "qarz"), ("Akt sverka", "akt")]),
     ("⚙️", "Sozlamalar", [("Kassirlar", "kassirlar"), ("Audit jurnali", "audit")]),
 ]
-ALLOWED = {"kassir": {"pos"}, "omborchi": {"tovar", "qoldiq", "kirim", "kirimlar", "kodlar"}}
+ALLOWED = {"kassir": {"pos"}, "omborchi": {"tovar", "qoldiq", "jurnal", "kirim", "kirimlar", "kodlar"}}
 
 ss = st.session_state
 for k, v in {"user": None, "cart": [], "receipt": "", "msg": None, "rc": []}.items():
@@ -189,7 +189,9 @@ if not ss.user:
 user = ss.user
 st.markdown("""<style>
 [data-testid="stSidebar"]{background:#FFF4B8}
-[data-testid="stSidebar"] button{justify-content:flex-start;text-align:left;border:none;box-shadow:none}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.2rem}
+[data-testid="stSidebar"] button{justify-content:flex-start !important;text-align:left !important;border:none;box-shadow:none;padding:.3rem .7rem;min-height:2.1rem}
+[data-testid="stSidebar"] button>div,[data-testid="stSidebar"] button p{justify-content:flex-start !important;text-align:left !important;width:100%}
 [data-testid="stSidebar"] button[kind="secondary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{background:transparent;color:#222}
 [data-testid="stSidebar"] button[kind="secondary"]:hover,[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover{background:#FFE98A}
 [data-testid="stSidebar"] button[kind="primary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{background:#FFD84D;color:#111;font-weight:600}
@@ -614,8 +616,8 @@ elif menu == "kirim":
                             if pid_ is None:
                                 pid_ = c.execute(text("INSERT INTO products (name,unit,price,cost,marked,stock,active) VALUES (:n,:u,:p,:c,:m,0,1) RETURNING id"),
                                                  {"n": r["name"], "u": r["unit"], "p": r["price"], "c": r["cost"], "m": int(r["marked"])}).scalar()
-                            c.execute(text("INSERT INTO receipt_items (receipt_id,product_id,name,qty,cost) VALUES (:r,:p,:n,:q,:c)"),
-                                      {"r": rid, "p": pid_, "n": r["name"], "q": r["qty"], "c": r["cost"]})
+                            c.execute(text("INSERT INTO receipt_items (receipt_id,product_id,name,qty,cost,price) VALUES (:r,:p,:n,:q,:c,:pr)"),
+                                      {"r": rid, "p": pid_, "n": r["name"], "q": r["qty"], "c": r["cost"], "pr": r["price"]})
                             c.execute(text("UPDATE products SET stock = stock + :q, cost=:c, price=:pr WHERE id=:p"),
                                       {"q": r["qty"], "c": r["cost"], "pr": r["price"], "p": pid_})
                             if r["codes"]:
@@ -659,37 +661,73 @@ elif menu == "kirimlar":
         show_df(q("SELECT name,qty,cost FROM receipt_items WHERE receipt_id=:r", r=int(rid)), {"name": "Tovar", "qty": "Miqdor", "cost": "Tan narxi"})
 
 elif menu == "qoldiq":
-    prods = q("SELECT * FROM products WHERE active=1 ORDER BY name")
-    if prods.empty:
-        st.info("Tovarlar yo'q.")
+    st0 = q("""SELECT p.id, p.name, p.unit, p.marked, p.stock, p.cost, p.price, p.barcode,
+        COALESCE((SELECT SUM(ri.qty) FROM receipt_items ri WHERE ri.product_id=p.id),0) AS received,
+        COALESCE((SELECT SUM(si.qty) FROM sale_items si WHERE si.product_id=p.id),0) AS sold,
+        (SELECT pa.name FROM receipt_items ri JOIN receipts r ON r.id=ri.receipt_id LEFT JOIN partners pa ON pa.id=r.partner_id
+         WHERE ri.product_id=p.id ORDER BY r.id DESC, ri.id DESC LIMIT 1) AS supplier
+        FROM products p WHERE p.active=1 ORDER BY p.name""")
+    if st0.empty:
+        st.info("Omborda tovar yo'q. Xaridlar → Omborga kirim orqali tovar kiriting.")
     else:
-        c1, c2, c3 = st.columns([2, 1, 1])
-        s = c1.text_input("🔍 Nomi yoki shtrix-kod")
-        only = c2.checkbox("Faqat qoldig'i borlar")
-        low = c3.checkbox("Kam qoldiq (≤ 5)")
-        v = prods
-        if s:
-            v = v[v["name"].str.contains(s, case=False, na=False) | v["barcode"].fillna("").str.contains(s, case=False)]
+        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+        s_ = c1.text_input("🔍 Tovar nomi, yetkazib beruvchi yoki shtrix-kod")
+        mk = c2.selectbox("Turi", ["Hammasi", "Markirovkali", "Oddiy"])
+        only = c3.checkbox("Faqat qoldig'i borlar")
+        low = c4.checkbox("Kam qoldiq (≤ 5)")
+        v = st0
+        if s_:
+            hay = v["name"].fillna("") + " " + v["supplier"].fillna("") + " " + v["barcode"].fillna("")
+            v = v[hay.str.contains(s_, case=False, regex=False)]
+        if mk != "Hammasi":
+            v = v[v["marked"] == (1 if mk == "Markirovkali" else 0)]
         if only:
             v = v[v["stock"] > 0]
         if low:
             v = v[v["stock"] <= 5]
         a, b, c = st.columns(3)
         a.metric("Tovar turlari", len(v))
-        b.metric("Qoldiq bahosi (tan narx)", m((v["stock"] * v["cost"].fillna(0)).sum()))
-        c.metric("Qoldiq bahosi (sotuv narx)", m((v["stock"] * v["price"]).sum()))
+        b.metric("Qoldiq bahosi (kelgan narxda)", m((v["stock"] * v["cost"].fillna(0)).sum()))
+        c.metric("Qoldiq bahosi (sotish narxida)", m((v["stock"] * v["price"].fillna(0)).sum()))
         v = v.copy()
-        v["marked"] = v["marked"].map(lambda x: "Ha" if x else "")
+        v["turi"] = v["marked"].map(lambda x: "🏷️ Markirovkali" if x else "Oddiy")
         v["summa"] = v["stock"] * v["cost"].fillna(0)
-        show_df(v[["name", "unit", "barcode", "marked", "stock", "cost", "price", "summa"]],
-                {"name": "Tovar", "unit": "Birlik", "barcode": "Shtrix-kod", "marked": "Markirovka", "stock": "Qoldiq", "cost": "Tan narxi", "price": "Sotuv narxi", "summa": "Qoldiq summasi"})
+        v["supplier"] = v["supplier"].fillna("—")
+        show_df(v[["name", "supplier", "turi", "unit", "received", "sold", "stock", "cost", "price", "summa"]],
+                {"name": "Tovar nomi", "supplier": "Yetkazib beruvchi", "turi": "Markirovka", "unit": "Birlik", "received": "Kelgan soni",
+                 "sold": "Sotilgan", "stock": "Qoldiq", "cost": "Kelgan narxi", "price": "Sotish narxi", "summa": "Qoldiq summasi"})
         st.markdown("**Tovar harakati (kirim / sotuv)**")
-        pid = pick("Tovar:", prods, "id", "name", key="mv")
+        pid = pick("Tovar:", st0, "id", "name", key="mv")
         mv = q("""SELECT r.created AS vaqt, 'Kirim №' || r.id AS hujjat, ri.qty AS miqdor FROM receipt_items ri JOIN receipts r ON r.id=ri.receipt_id WHERE ri.product_id=:p
                   UNION ALL
                   SELECT s.created, 'Sotuv №' || s.id, -si.qty FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE si.product_id=:p
                   ORDER BY 1 DESC""", p=int(pid))
         show_df(mv, {"vaqt": "Vaqt", "hujjat": "Hujjat", "miqdor": "Miqdor (+kirim / −sotuv)"})
+
+elif menu == "jurnal":
+    j = q("""SELECT r.created, r.id AS rid, pa.name AS supplier, ri.name, p.marked, ri.qty, p.unit, ri.cost, COALESCE(ri.price, p.price) AS price, ri.qty*ri.cost AS jami
+             FROM receipt_items ri JOIN receipts r ON r.id=ri.receipt_id LEFT JOIN partners pa ON pa.id=r.partner_id
+             LEFT JOIN products p ON p.id=ri.product_id ORDER BY r.id DESC, ri.id DESC LIMIT 2000""")
+    if j.empty:
+        st.info("Hali kirim yo'q. Xaridlar → Omborga kirim orqali birinchi kirimni kiriting.")
+    else:
+        j["supplier"] = j["supplier"].fillna("—")
+        c1, c2 = st.columns(2)
+        s_ = c1.text_input("🔍 Tovar nomi bo'yicha")
+        sups = ["Hammasi"] + sorted(j["supplier"].unique().tolist())
+        sp_ = c2.selectbox("Yetkazib beruvchi", sups)
+        if s_:
+            j = j[j["name"].str.contains(s_, case=False, na=False, regex=False)]
+        if sp_ != "Hammasi":
+            j = j[j["supplier"] == sp_]
+        j = j.copy()
+        j["turi"] = j["marked"].map(lambda x: "🏷️ Markirovkali" if x == 1 else "Oddiy")
+        a, b = st.columns(2)
+        a.metric("Kirim qatorlari", len(j))
+        b.metric("Kirim summasi", m(j["jami"].sum()))
+        show_df(j[["created", "rid", "supplier", "name", "turi", "qty", "unit", "cost", "price", "jami"]],
+                {"created": "Sana", "rid": "Kirim №", "supplier": "Yetkazib beruvchi", "name": "Tovar nomi", "turi": "Markirovka", "qty": "Soni",
+                 "unit": "Birlik", "cost": "Kelgan narxi", "price": "Sotish narxi", "jami": "Jami"})
 
 elif menu == "kodlar":
     mp = q("SELECT * FROM products WHERE marked=1 AND active=1 ORDER BY name")
