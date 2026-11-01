@@ -355,7 +355,8 @@ for k, v in {"user": None, "cart": [], "receipt": "", "msg": None, "rc": []}.ite
     ss.setdefault(k, v)
 
 # ================================================================ KIRISH
-st.title("🛒 Sav-do ERP")
+if not ss.get("user"):
+    st.title("🛒 Sav-do ERP")
 
 if q("SELECT COUNT(*) FROM users").iloc[0, 0] == 0:
     st.subheader("Birinchi administratorni yarating")
@@ -394,30 +395,37 @@ try:
 except Exception:
     RATE = 12130.0
 st.markdown("""<style>
-[data-testid="stSidebar"]{background:#FFFFFF;border-right:1px solid #E6E9F0}
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.15rem}
-[data-testid="stSidebar"] button{justify-content:flex-start !important;text-align:left !important;border:none;box-shadow:none;padding:.3rem .8rem;min-height:2.1rem;border-radius:8px}
-[data-testid="stSidebar"] button>div,[data-testid="stSidebar"] button p{justify-content:flex-start !important;text-align:left !important;width:100%}
+section[data-testid="stSidebar"]{background:#fff;border-right:1px solid #E6E9F0;width:272px !important;min-width:272px !important}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.2rem}
+[data-testid="stSidebar"] button{position:relative;justify-content:flex-start !important;text-align:left !important;border:none;box-shadow:none;padding:.5rem .8rem;min-height:2.4rem;border-radius:10px;font-size:.95rem}
+[data-testid="stSidebar"] button>div,[data-testid="stSidebar"] button p{justify-content:flex-start !important;text-align:left !important;width:100%;white-space:normal;line-height:1.25}
 [data-testid="stSidebar"] button[kind="secondary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]{background:transparent;color:#1F2937}
 [data-testid="stSidebar"] button[kind="secondary"]:hover,[data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"]:hover{background:#F1F4FB}
-[data-testid="stSidebar"] button[kind="primary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{background:#E6EEFF;color:#1F4FD8;font-weight:600}
-.topbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:-8px 0 6px}
+[data-testid="stSidebar"] button[kind="primary"],[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]{background:#E8EEFB;color:#1D4ED8;font-weight:600}
+[class*="st-key-subs_"]{margin:2px 0 8px 20px;padding-left:8px;border-left:2px solid #E3E8F2}
+[class*="st-key-sub_"] button{font-size:.9rem;font-weight:400;padding:.4rem .7rem;padding-right:46px;min-height:2.1rem}
+[class*="st-key-sub_"] button[kind="primary"],[class*="st-key-sub_"] button[data-testid="stBaseButton-primary"]{font-weight:600}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 6px 14px}
+.brand .logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#3B82F6,#1D4ED8);color:#fff;display:flex;align-items:center;justify-content:center;font-size:1.15rem}
+.brand .bn{font-weight:700;color:#111827;line-height:1.1}.brand .bs{font-size:.72rem;color:#8A94A6}
+.ucard{display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px;border:1px solid #E6E9F0;border-radius:12px;background:#F8FAFD}
+.ucard .av{width:32px;height:32px;border-radius:50%;background:#E6EEFF;display:flex;align-items:center;justify-content:center}
+.ucard span{font-size:.75rem;color:#8A94A6}
+.block-container{padding-top:1.4rem}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+.topbar .ttl{font-size:1.45rem;font-weight:700;color:#111827}
+.topbar .chips{display:flex;gap:8px;flex-wrap:wrap}
 .chip{background:#fff;border:1px solid #E1E5EE;border-radius:10px;padding:5px 12px;font-size:.85rem;color:#1F2937;box-shadow:0 1px 2px rgba(20,30,60,.05)}
 .chip.warn{background:#FFF6DD;border-color:#F3D98B}
 h3{font-weight:700}
-[data-testid="stMetric"]{background:#fff;border:1px solid #E6E9F0;border-radius:14px;padding:12px 16px;box-shadow:0 1px 3px rgba(20,30,60,.06)}
+[data-testid="stMetric"]{background:#F3F7FF;border:1px solid #D6E4FF;border-radius:14px;padding:12px 16px;box-shadow:0 1px 3px rgba(20,30,60,.05)}
+[data-testid="stMetricValue"]{color:#1D4ED8}
 [data-testid="stVerticalBlockBorderWrapper"]{border-radius:14px;border-color:#E6E9F0}
 [data-testid="stExpander"]{border-radius:12px;border-color:#E6E9F0}
 [data-testid="stDataFrame"]{border-radius:12px;overflow:hidden}
 .stButton button,.stDownloadButton button{border-radius:10px}
 </style>""", unsafe_allow_html=True)
-st.sidebar.markdown(f"👤 **{user['name']}**  \n{ROLES[user['role']]}")
-if st.sidebar.button("🚪 Chiqish"):
-    log("Tizimdan chiqdi")
-    ss.user = None
-    ss.cart = []
-    st.rerun()
-
+st.sidebar.markdown(f"<div class='brand'><div class='logo'>🛒</div><div><div class='bn'>{html.escape(str(get_setting('shop_name', 'SAV-DO')))}</div><div class='bs'>ERP · Savdo tizimi</div></div></div>", unsafe_allow_html=True)
 
 def ok(k):
     return user["role"] == "admin" or k in ALLOWED.get(user["role"], set())
@@ -433,12 +441,20 @@ def go(sec_, sub_):
     ss.nav_sec, ss.nav_sub = sec_, sub_
 
 
-def nbtn(label, key, active, sec_, sub_):
+def nbtn(label, key, active, sec_, sub_, icon=None, host=None):
+    host = host or st.sidebar
     kw = dict(key=key, type="primary" if active else "secondary", on_click=go, args=(sec_, sub_))
-    try:
-        st.sidebar.button(label, width="stretch", **kw)
-    except Exception:
-        st.sidebar.button(label, use_container_width=True, **kw)
+    for w in ({"width": "stretch"}, {"use_container_width": True}):
+        for ic in ([{"icon": f":material/{icon}:"}] if icon else []) + [{}]:
+            try:
+                host.button(label, **w, **ic, **kw)
+                return
+            except Exception:
+                continue
+
+
+ICONS = {"Asosiy": "dashboard", "Sotuvlar": "shopping_cart", "Nasiya": "receipt_long", "Xaridlar": "local_shipping", "Ombor": "inventory_2",
+         "Buxgalteriya": "calculate", "Hisobotlar": "bar_chart", "Sozlamalar": "settings"}
 
 
 if ss.get("nav_sec") not in sec_map:
@@ -455,16 +471,38 @@ if user["role"] == "admin":
         pass
 
 
-def bdg(n):
-    return f"   🔴 {n}" if n else ""
-
-
-for label, subs_ in sections:
+BADGE_CSS = "position:absolute;top:50%;transform:translateY(-50%);background:#E53935;color:#fff;border-radius:999px;min-width:22px;height:22px;line-height:22px;text-align:center;font-size:.72rem;font-weight:700;padding:0 6px;"
+dyn = []
+for si, (label, subs_) in enumerate(sections):
     is_act = label == ss.nav_sec
-    nbtn(label + bdg(sum(BADGE.get(k_, 0) for _, k_ in subs_)), f"sec_{label}", is_act, label, subs_[0][1])
+    plain = label.split("  ", 1)[-1]
+    nbtn(plain, f"sec_{si}", is_act, label, subs_[0][1], icon=ICONS.get(plain))
+    if len(subs_) > 1:
+        dyn.append(f".st-key-sec_{si} button::after{{content:'{'⌄' if is_act else '›'}';position:absolute;right:14px;top:50%;transform:translateY(-50%);color:#8A94A6;font-size:1.15rem}}")
+        sb = sum(BADGE.get(k_, 0) for _, k_ in subs_)
+        if sb and not is_act:
+            dyn.append(f".st-key-sec_{si} button::before{{content:'{sb}';right:38px;{BADGE_CSS}}}.st-key-sec_{si} button{{padding-right:70px}}")
     if is_act and len(subs_) > 1:  # tanlangan bo'lim tagida ichki bo'limlar ochiladi
-        for nm, k_ in subs_:
-            nbtn("\u00a0\u00a0\u00a0\u00a0↳ " + nm + bdg(BADGE.get(k_, 0)), f"sub_{label}_{k_}", k_ == ss.nav_sub, label, k_)
+        try:
+            box = st.sidebar.container(key=f"subs_{si}")
+        except Exception:
+            box = st.sidebar.container()
+        for ki, (nm, k_) in enumerate(subs_):
+            nbtn(nm, f"sub_{si}_{ki}", k_ == ss.nav_sub, label, k_, host=box)
+            if BADGE.get(k_):
+                dyn.append(f".st-key-sub_{si}_{ki} button::after{{content:'{BADGE[k_]}';right:10px;{BADGE_CSS}}}")
+if dyn:
+    st.markdown("<style>" + "".join(dyn) + "</style>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<div class='ucard'><div class='av'>👤</div><div><b>{html.escape(str(user['name']))}</b><br><span>{ROLES[user['role']]}</span></div></div>", unsafe_allow_html=True)
+try:
+    _out = st.sidebar.button("Chiqish", key="logout", icon=":material/logout:", width="stretch")
+except Exception:
+    _out = st.sidebar.button("🚪 Chiqish", key="logout")
+if _out:
+    log("Tizimdan chiqdi")
+    ss.user = None
+    ss.cart = []
+    st.rerun()
 menu = ss.nav_sub
 pk = next(n for n, k_ in sec_map[ss.nav_sec] if k_ == menu)
 try:
@@ -473,10 +511,9 @@ except Exception:
     _low = 0
 _notif = sum(BADGE.values()) + _low
 st.markdown(
-    f"<div class='topbar'><span class='chip'>💱 1 $ = {RATE:,.0f} so'm</span><span class='chip'>📅 {now()[:10]}</span>"
+    f"<div class='topbar'><div class='ttl'>{html.escape(pk)}</div><div class='chips'><span class='chip'>💱 1 $ = {RATE:,.0f} so'm</span><span class='chip'>📅 {now()[:10]}</span>"
     f"<span class='chip{' warn' if _notif else ''}'>🔔 {_notif}</span>"
-    f"<span class='chip'>👤 {user['name']} · {ROLES[user['role']]}</span></div>", unsafe_allow_html=True)
-st.subheader(pk)
+    f"<span class='chip'>👤 {html.escape(str(user['name']))} · {ROLES[user['role']]}</span></div></div>", unsafe_allow_html=True)
 
 
 # ================================================================ SAHIFALAR
