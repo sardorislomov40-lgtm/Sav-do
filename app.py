@@ -1,4 +1,5 @@
 import hashlib
+import io
 import secrets
 from datetime import date, datetime, timedelta, timezone
 
@@ -84,7 +85,18 @@ def m(x):
     return f"{x:,.0f} so'm"
 
 
-def show_df(d, rename=None, color=None):
+XL = [0]
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def to_xlsx(df, sheet="Jadval"):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name=str(sheet)[:31] or "Jadval")
+    return buf.getvalue()
+
+
+def show_df(d, rename=None, color=None, xl=True):
     d = d.rename(columns=rename) if rename else d
     obj = d
     if color is not None and not d.empty:
@@ -96,6 +108,119 @@ def show_df(d, rename=None, color=None):
         st.dataframe(obj, width="stretch", hide_index=True)
     except Exception:
         st.dataframe(obj, use_container_width=True, hide_index=True)
+    if xl and not d.empty:
+        XL[0] += 1
+        try:
+            st.download_button("⬇️ Excelga yuklab olish", to_xlsx(d, globals().get("pk", "Jadval")), key=f"xl_{XL[0]}", mime=XLSX,
+                               file_name=f"{globals().get('menu', 'jadval')}_{now()[:10]}.xlsx")
+        except Exception:
+            pass
+
+
+def sv(x):
+    return "" if x is None or (isinstance(x, float) and pd.isna(x)) else str(x).strip()
+
+
+def nv(x):
+    try:
+        v = float(str(x).replace(" ", "").replace(",", "."))
+        return 0.0 if pd.isna(v) else v
+    except Exception:
+        return 0.0
+
+
+def import_box(key, title, template, on_apply):
+    """Excel/CSV dan yuklash: shablon + fayl + ko'rib chiqish + tasdiqlash."""
+    if ss.get("imp_msg"):
+        st.success(ss.imp_msg)
+        ss.imp_msg = None
+    with st.expander(f"📥 Excel'dan yuklash: {title}"):
+        st.download_button("📄 Shablonni yuklab olish (Excel)", to_xlsx(template, "Shablon"), file_name=f"shablon_{key}.xlsx", key=f"tpl_{key}", mime=XLSX)
+        up = st.file_uploader("Excel (.xlsx) yoki CSV faylni tanlang", type=["xlsx", "csv"], key=f"up_{key}")
+        if up is not None:
+            try:
+                df = pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
+            except Exception as e:
+                st.error(f"Faylni o'qib bo'lmadi: {e}")
+                return
+            df.columns = [str(c).strip() for c in df.columns]
+            st.caption(f"{len(df)} qator o'qildi. Dastlabki qatorlar:")
+            show_df(df.head(15), xl=False)
+            if st.button("✅ Yuklash", key=f"go_{key}", type="primary"):
+                try:
+                    ss.imp_msg = on_apply(df)
+                except Exception as e:
+                    st.error(f"Xato: {e}")
+                    return
+                st.rerun()
+
+
+def imp_products(df):
+    cur = q("SELECT id,name FROM products WHERE active=1")
+    have = {n.lower(): int(i) for i, n in zip(cur["id"], cur["name"])}
+    add = upd = 0
+    with ENGINE.begin() as c:
+        for r in df.to_dict("records"):
+            name = sv(r.get("Nomi"))
+            if not name:
+                continue
+            unit, bc = sv(r.get("Birlik")) or "dona", sv(r.get("Shtrix-kod")) or None
+            mk = int(sv(r.get("Markirovka")).lower() in ("ha", "1", "yes", "true", "+"))
+            cost, price = nv(r.get("Tan narxi")), nv(r.get("Sotuv narxi"))
+            if name.lower() in have:
+                c.execute(text("UPDATE products SET unit=:u, cost=:c, price=:p, marked=:m, barcode=COALESCE(:b, barcode) WHERE id=:i"),
+                          {"u": unit, "c": cost, "p": price, "m": mk, "b": bc, "i": have[name.lower()]})
+                upd += 1
+            else:
+                c.execute(text("INSERT INTO products (name,unit,price,cost,barcode,marked,stock,active) VALUES (:n,:u,:p,:c,:b,:m,0,1)"),
+                          {"n": name, "u": unit, "p": price, "c": cost, "b": bc, "m": mk})
+                have[name.lower()] = -1
+                add += 1
+    log("Excel'dan tovarlar yuklandi", f"qo'shildi {add}, yangilandi {upd}")
+    return f"✅ Tovarlar: {add} ta yangi qo'shildi, {upd} tasi yangilandi. Qoldiqni «Omborga kirim» orqali kiriting."
+
+
+def imp_partners(df, kind):
+    cur = q("SELECT name FROM partners WHERE kind=:k", k=kind)
+    have = {n.lower() for n in cur["name"]}
+    add = 0
+    with ENGINE.begin() as c:
+        for r in df.to_dict("records"):
+            name = sv(r.get("Nomi"))
+            if name and name.lower() not in have:
+                c.execute(text("INSERT INTO partners (name,phone,kind) VALUES (:n,:p,:k)"), {"n": name, "p": sv(r.get("Telefon")), "k": kind})
+                have.add(name.lower())
+                add += 1
+    log(f"Excel'dan {kind} yuklandi", f"qo'shildi {add}")
+    return f"✅ {add} ta yangi {kind.lower()} qo'shildi (takroriy nomlar o'tkazib yuborildi)."
+
+
+def imp_kirim(df):
+    pr = q("SELECT id,name,unit,marked,cost,price,barcode FROM products WHERE active=1").to_dict("records")
+    byname = {r["name"].lower(): r for r in pr}
+    bybc = {str(r["barcode"]): r for r in pr if r["barcode"]}
+    ok_ = skip = 0
+    for r in df.to_dict("records"):
+        name, bc, qty = sv(r.get("Tovar nomi")), sv(r.get("Shtrix-kod")), nv(r.get("Soni"))
+        if (not name and not bc) or qty <= 0:
+            skip += 1
+            continue
+        p = (bybc.get(bc) if bc else None) or byname.get(name.lower())
+        cost, price = nv(r.get("Tan narxi")), nv(r.get("Sotuv narxi"))
+        if p is not None:
+            if p["marked"]:
+                skip += 1
+                continue
+            ss.rc.append({"pid": int(p["id"]), "name": p["name"], "unit": p["unit"] or "dona", "marked": False, "qty": qty,
+                          "cost": cost or float(p["cost"] or 0), "price": price or float(p["price"] or 0), "codes": []})
+        else:
+            newrows = {x["name"].lower(): x for x in ss.rc if x["pid"] is None}
+            if name.lower() in newrows:
+                newrows[name.lower()]["qty"] += qty
+            else:
+                ss.rc.append({"pid": None, "name": name, "unit": sv(r.get("Birlik")) or "dona", "marked": False, "qty": qty, "cost": cost, "price": price, "codes": []})
+        ok_ += 1
+    return f"✅ Ro'yxatga {ok_} qator qo'shildi" + (f" ({skip} qator o'tkazib yuborildi: markirovkali yoki to'liq emas)" if skip else "") + ". Tekshirib, «Kirimni saqlash» ni bosing."
 
 
 def hash_pw(pw, salt=None):
@@ -220,7 +345,7 @@ NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti)])
     ("🏦", "Buxgalteriya", [("Mijozdan to'lov", "mijoztolov"), ("To'lovlar va o'tkazmalar", "tolov"), ("To'lovni qaytarish", "qaytarish"),
                             ("Kirim-Chiqim", "harakat"), ("Kontragent to'lovlari", "kontr"), ("Kassalar (hisoblar)", "hisob"), ("Kassa tahlili", "kassa"),
                             ("Muddati o'tgan qarzdorlar", "qarz_o"), ("Muddati o'tmagan qarzdorlar", "qarz_n"), ("Narx o'zgartirish so'rovlari", "narxsorov")]),
-    ("📊", "Hisobotlar", [("Savdo hisoboti", "hisobot"), ("Qarzdorlik", "qarz"), ("Akt sverka", "akt"), ("Kassirlar statistikasi", "stat")]),
+    ("📊", "Hisobotlar", [("Savdo hisoboti", "hisobot"), ("Qarzdorlik", "qarz"), ("Akt sverka", "akt"), ("Kassirlar hisoboti", "stat")]),
     ("⚙️", "Sozlamalar", [("Xodimlar (kassirlar)", "kassirlar"), ("Audit jurnali", "audit"), ("Valyuta kursi", "kurs"), ("Do'kon ma'lumotlari", "dokon")]),
 ]
 ALLOWED = {"kassir": {"pos"}, "omborchi": {"tovar", "qoldiq", "jurnal", "kirim", "kirimlar", "kodlar", "narxsorov", "inventar"}}
@@ -280,6 +405,11 @@ st.markdown("""<style>
 .chip{background:#fff;border:1px solid #E1E5EE;border-radius:10px;padding:5px 12px;font-size:.85rem;color:#1F2937;box-shadow:0 1px 2px rgba(20,30,60,.05)}
 .chip.warn{background:#FFF6DD;border-color:#F3D98B}
 h3{font-weight:700}
+[data-testid="stMetric"]{background:#fff;border:1px solid #E6E9F0;border-radius:14px;padding:12px 16px;box-shadow:0 1px 3px rgba(20,30,60,.06)}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:14px;border-color:#E6E9F0}
+[data-testid="stExpander"]{border-radius:12px;border-color:#E6E9F0}
+[data-testid="stDataFrame"]{border-radius:12px;overflow:hidden}
+.stButton button,.stDownloadButton button{border-radius:10px}
 </style>""", unsafe_allow_html=True)
 st.sidebar.markdown(f"👤 **{user['name']}**  \n{ROLES[user['role']]}")
 if st.sidebar.button("🚪 Chiqish"):
@@ -452,6 +582,7 @@ def partners_page(kind):
             st.success("Qo'shildi.")
     with top:
         show_df(partner_balances(kind), {"id": "ID", "name": "Nomi", "phone": "Telefon", "kind": "Turi", "balance": "Balans (+ u bizga qarz, − biz unga qarz)"})
+    import_box(f"partners_{kind}", kind.lower() + "lar", pd.DataFrame({"Nomi": ["Namuna savdo"], "Telefon": ["+998901234567"]}), lambda df: imp_partners(df, kind))
 
 
 def add_cart(p, code=None):
@@ -692,6 +823,8 @@ elif menu == "tovar":
         t["barcode"] = t["barcode"].fillna("")
         show_df(t[["id", "name", "unit", "barcode", "marked", "price", "cost", "stock"]], {**RN_P, "marked": "Markirovka"})
 
+    import_box("tovar", "tovarlar", pd.DataFrame({"Nomi": ["Coca-Cola 1.5L"], "Birlik": ["dona"], "Shtrix-kod": ["4780000000017"], "Markirovka": ["Yo'q"], "Tan narxi": [9000], "Sotuv narxi": [12000]}), imp_products)
+
 elif menu == "kirim":
     NEW = -1
     if ss.get("kirim_ok"):
@@ -701,117 +834,126 @@ elif menu == "kirim":
     prods = q("SELECT * FROM products WHERE active=1 ORDER BY name")
     snames, pnames = dict(zip(sup["id"], sup["name"])), dict(zip(prods["id"], prods["name"]))
 
-    st.markdown("### 1️⃣ Yetkazib beruvchi (kimdan keldi?)")
-    sp = st.selectbox("Yetkazib beruvchi", [None] + sup["id"].tolist() + [NEW], key="rc_sup",
-                      format_func=lambda x: "— yetkazib beruvchisiz —" if x is None else ("➕ Yangi yetkazib beruvchi (nomini yozaman)" if x == NEW else snames[x]))
-    new_sup = st.text_input("Yangi yetkazib beruvchi nomi", key="rc_newsup").strip() if sp == NEW else ""
+    import_box("kirim", "kirim qatorlari", pd.DataFrame({"Tovar nomi": ["Coca-Cola 1.5L"], "Shtrix-kod": [""], "Soni": [24], "Tan narxi": [9000], "Sotuv narxi": [12000], "Birlik": ["dona"]}), imp_kirim)
+    L, R = st.columns([3, 2], gap="large")
+    with L:
+        with st.container(border=True):
+            st.markdown("##### 1️⃣ Yetkazib beruvchi (kimdan keldi?)")
+            sp = st.selectbox("Yetkazib beruvchi", [None] + sup["id"].tolist() + [NEW], key="rc_sup",
+                              format_func=lambda x: "— yetkazib beruvchisiz —" if x is None else ("➕ Yangi yetkazib beruvchi (nomini yozaman)" if x == NEW else snames[x]))
+            new_sup = st.text_input("Yangi yetkazib beruvchi nomi", key="rc_newsup").strip() if sp == NEW else ""
 
-    st.markdown("### 2️⃣ Tovar va nechta keldi")
-    pp = st.selectbox("Tovar", [NEW] + prods["id"].tolist(), key="rc_prod",
-                      format_func=lambda x: "➕ Yangi tovar (ro'yxatda yo'q)" if x == NEW else pnames[x])
-    if pp == NEW:
-        c1, c2, c3 = st.columns(3)
-        nn = c1.text_input("Yangi tovar nomi", key="rc_nn").strip()
-        unit = c2.selectbox("Birlik", ["dona", "kg", "quti", "metr", "litr"], key="rc_unit")
-        marked = c3.checkbox("Markirovkali", key="rc_mk")
-        cost0 = price0 = 0.0
-    else:
-        p = prods[prods["id"] == pp].iloc[0]
-        nn, unit, marked = p["name"], p["unit"] or "dona", bool(p["marked"])
-        cost0, price0 = float(p["cost"] or 0), float(p["price"] or 0)
-        st.caption(f"Hozir omborda: **{p['stock']:g} {unit}**")
-    c1, c2 = st.columns(2)
-    cost = c1.number_input("Tan narxi (1 ta uchun, so'm)", min_value=0.0, value=cost0, step=500.0, key=f"rc_cost_{pp}")
-    price = c2.number_input("Sotuv narxi (1 ta uchun, so'm)", min_value=0.0, value=price0, step=500.0, key=f"rc_price_{pp}")
-    codes_in = []
-    if marked:
-        txt = st.text_area("Markirovka kodlari (har qatorda bitta; skaner bilan ketma-ket o'qing yoki ro'yxatni joylang)", height=120, key=f"rc_codes_{pp}")
-        up = st.file_uploader("yoki .txt / .csv fayl (har qatorda bitta kod)", type=["txt", "csv"], key=f"rc_up_{pp}")
-        raw = txt.splitlines() + (up.getvalue().decode("utf-8", "ignore").splitlines() if up else [])
-        codes_in = list(dict.fromkeys(c for c in (clean_code(x).split(",")[0].strip() for x in raw) if c))
-        qty = float(len(codes_in))
-        st.caption(f"Kodlar soni = kelgan miqdor: **{len(codes_in)}**")
-    else:
-        qty = st.number_input(f"Nechta {unit} keldi?", min_value=0.0, value=0.0, step=1.0, key=f"rc_qty_{pp}")
-    if st.button("➕ Ro'yxatga qo'shish", type="primary"):
-        low = {x.lower() for x in prods["name"]} | {r["name"].lower() for r in ss.rc if r["pid"] is None}
-        if pp == NEW and not nn:
-            st.error("Yangi tovar nomini yozing.")
-        elif pp == NEW and nn.lower() in low:
-            st.error("Bunday tovar allaqachon bor. Ro'yxatdan tanlang.")
-        elif qty <= 0:
-            st.error("Nechta kelganini kiriting (yoki markirovka kodlarini).")
-        else:
-            bad = (existing_codes(codes_in) if codes_in else set()) | ({c for r in ss.rc for c in r["codes"]} & set(codes_in))
-            if bad:
-                st.error(f"{len(bad)} ta kod allaqachon bor, masalan: {next(iter(bad))}")
+            st.markdown("##### 2️⃣ Tovar va nechta keldi")
+            pp = st.selectbox("Tovar", [NEW] + prods["id"].tolist(), key="rc_prod",
+                              format_func=lambda x: "➕ Yangi tovar (ro'yxatda yo'q)" if x == NEW else pnames[x])
+            if pp == NEW:
+                c1, c2, c3 = st.columns(3)
+                nn = c1.text_input("Yangi tovar nomi", key="rc_nn").strip()
+                unit = c2.selectbox("Birlik", ["dona", "kg", "quti", "metr", "litr"], key="rc_unit")
+                marked = c3.checkbox("Markirovkali", key="rc_mk")
+                cost0 = price0 = 0.0
             else:
-                ss.rc.append({"pid": None if pp == NEW else int(pp), "name": nn, "unit": unit, "marked": marked, "qty": qty, "cost": cost, "price": price, "codes": codes_in})
-                st.rerun()
+                p = prods[prods["id"] == pp].iloc[0]
+                nn, unit, marked = p["name"], p["unit"] or "dona", bool(p["marked"])
+                cost0, price0 = float(p["cost"] or 0), float(p["price"] or 0)
+                st.caption(f"Hozir omborda: **{p['stock']:g} {unit}**")
+            c1, c2 = st.columns(2)
+            cost = c1.number_input("Tan narxi (1 ta uchun, so'm)", min_value=0.0, value=cost0, step=500.0, key=f"rc_cost_{pp}")
+            price = c2.number_input("Sotuv narxi (1 ta uchun, so'm)", min_value=0.0, value=price0, step=500.0, key=f"rc_price_{pp}")
+            codes_in = []
+            if marked:
+                txt = st.text_area("Markirovka kodlari (har qatorda bitta; skaner bilan ketma-ket o'qing yoki ro'yxatni joylang)", height=120, key=f"rc_codes_{pp}")
+                up = st.file_uploader("yoki .txt / .csv fayl (har qatorda bitta kod)", type=["txt", "csv"], key=f"rc_up_{pp}")
+                raw = txt.splitlines() + (up.getvalue().decode("utf-8", "ignore").splitlines() if up else [])
+                codes_in = list(dict.fromkeys(c for c in (clean_code(x).split(",")[0].strip() for x in raw) if c))
+                qty = float(len(codes_in))
+                st.caption(f"Kodlar soni = kelgan miqdor: **{len(codes_in)}**")
+            else:
+                qty = st.number_input(f"Nechta {unit} keldi?", min_value=0.0, value=0.0, step=1.0, key=f"rc_qty_{pp}")
+            if st.button("➕ Ro'yxatga qo'shish", type="primary"):
+                low = {x.lower() for x in prods["name"]} | {r["name"].lower() for r in ss.rc if r["pid"] is None}
+                if pp == NEW and not nn:
+                    st.error("Yangi tovar nomini yozing.")
+                elif pp == NEW and nn.lower() in low:
+                    st.error("Bunday tovar allaqachon bor. Ro'yxatdan tanlang.")
+                elif qty <= 0:
+                    st.error("Nechta kelganini kiriting (yoki markirovka kodlarini).")
+                else:
+                    bad = (existing_codes(codes_in) if codes_in else set()) | ({c for r in ss.rc for c in r["codes"]} & set(codes_in))
+                    if bad:
+                        st.error(f"{len(bad)} ta kod allaqachon bor, masalan: {next(iter(bad))}")
+                    else:
+                        ss.rc.append({"pid": None if pp == NEW else int(pp), "name": nn, "unit": unit, "marked": marked, "qty": qty, "cost": cost, "price": price, "codes": codes_in})
+                        st.rerun()
 
-    if ss.rc:
-        st.markdown("### 3️⃣ Kirim ro'yxati")
-        rc = pd.DataFrame(ss.rc)
-        rc["jami"] = rc["qty"] * rc["cost"]
-        show_df(rc[["name", "qty", "unit", "cost", "jami"]], {"name": "Tovar", "qty": "Nechta keldi", "unit": "Birlik", "cost": "Tan narxi", "jami": "Jami"})
-        total = float(rc["jami"].sum())
-        st.markdown(f"#### Kirim summasi: **{m(total)}**")
-        accs = acc_balances()
-        c1, c2 = st.columns(2)
-        paid = c1.number_input("Hozir yetkazib beruvchiga to'langan summa:", min_value=0.0, max_value=total, value=0.0, step=1000.0)
-        acc = None
-        if paid > 0 and not accs.empty:
-            with c2:
-                acc = pick("Qaysi hisobdan to'landi:", accs, "id", "name", none="—")
-        st.caption(f"Qolgan {m(total - paid)} yetkazib beruvchiga qarz bo'lib yoziladi.")
-        b1, b2 = st.columns(2)
-        if b1.button("✅ Kirimni saqlash", type="primary"):
-            if sp == NEW and not new_sup:
-                st.error("Yangi yetkazib beruvchi nomini yozing.")
-            elif sp is None and paid < total:
-                st.error("Qarzga olingan bo'lsa, yetkazib beruvchini tanlang yoki yozing.")
-            elif paid > 0 and acc is None:
-                st.error("To'lov hisobini tanlang (Bank va kassa → Hisoblar).")
-            else:
-                try:
-                    with ENGINE.begin() as c:
-                        partner = sp
-                        if sp == NEW:
-                            partner = c.execute(text("SELECT id FROM partners WHERE name=:n AND kind='Yetkazib beruvchi'"), {"n": new_sup}).scalar()
-                            if partner is None:
-                                partner = c.execute(text("INSERT INTO partners (name,kind) VALUES (:n,'Yetkazib beruvchi') RETURNING id"), {"n": new_sup}).scalar()
-                        rid = c.execute(text("INSERT INTO receipts (created,user_name,partner_id,total,paid) VALUES (:t,:u,:p,:s,:pd) RETURNING id"),
-                                        {"t": now(), "u": user["username"], "p": partner, "s": total, "pd": paid}).scalar()
-                        for r in ss.rc:
-                            pid_ = r["pid"]
-                            if pid_ is None:
-                                pid_ = c.execute(text("INSERT INTO products (name,unit,price,cost,marked,stock,active) VALUES (:n,:u,:p,:c,:m,0,1) RETURNING id"),
-                                                 {"n": r["name"], "u": r["unit"], "p": r["price"], "c": r["cost"], "m": int(r["marked"])}).scalar()
-                            c.execute(text("INSERT INTO receipt_items (receipt_id,product_id,name,qty,cost,price) VALUES (:r,:p,:n,:q,:c,:pr)"),
-                                      {"r": rid, "p": pid_, "n": r["name"], "q": r["qty"], "c": r["cost"], "pr": r["price"]})
-                            c.execute(text("UPDATE products SET stock = stock + :q, cost=:c, price=:pr WHERE id=:p"),
-                                      {"q": r["qty"], "c": r["cost"], "pr": r["price"], "p": pid_})
-                            if r["codes"]:
-                                c.execute(text("INSERT INTO mark_codes (product_id,code,status,receipt_id) VALUES (:p,:c,'omborda',:r)"),
-                                          [{"p": pid_, "c": x, "r": rid} for x in r["codes"]])
-                        if partner:
-                            c.execute(text("INSERT INTO ledger (created,partner_id,amount,doc,note,user_name) VALUES (:t,:p,:a,:d,'Tovar kirimi',:u)"),
-                                      {"t": now(), "p": partner, "a": -total, "d": f"Kirim №{rid}", "u": user["username"]})
-                        if paid > 0:
-                            c.execute(text("INSERT INTO cash_moves (created,account_id,amount,partner_id,doc,note,user_name) VALUES (:t,:a,:s,:p,:d,'Kirim uchun to''lov',:u)"),
-                                      {"t": now(), "a": acc, "s": -paid, "p": partner, "d": f"Kirim №{rid}", "u": user["username"]})
-                            if partner:
-                                c.execute(text("INSERT INTO ledger (created,partner_id,amount,doc,note,user_name) VALUES (:t,:p,:a,:d,'To''lov',:u)"),
-                                          {"t": now(), "p": partner, "a": paid, "d": f"Kirim №{rid}", "u": user["username"]})
-                    log("Omborga kirim", f"№{rid}, {m(total)}, {len(ss.rc)} qator")
-                    ss.kirim_ok = f"✅ Kirim №{rid} saqlandi: {len(ss.rc)} ta tovar, {m(total)}. Qoldiq yangilandi."
-                    ss.rc = []
+    with R:
+        with st.container(border=True):
+            st.markdown("##### 🧺 Kirim ro'yxati")
+            if ss.rc:
+                rc = pd.DataFrame(ss.rc)
+                rc["jami"] = rc["qty"] * rc["cost"]
+                show_df(rc[["name", "qty", "unit", "cost", "jami"]], {"name": "Tovar", "qty": "Nechta keldi", "unit": "Birlik", "cost": "Tan narxi", "jami": "Jami"})
+                total = float(rc["jami"].sum())
+                st.markdown(f"#### Kirim summasi: **{m(total)}**")
+                accs = acc_balances()
+                c1, c2 = st.columns(2)
+                paid = c1.number_input("Hozir yetkazib beruvchiga to'langan summa:", min_value=0.0, max_value=total, value=0.0, step=1000.0)
+                acc = None
+                if paid > 0 and not accs.empty:
+                    with c2:
+                        acc = pick("Qaysi hisobdan to'landi:", accs, "id", "name", none="—")
+                st.caption(f"Qolgan {m(total - paid)} yetkazib beruvchiga qarz bo'lib yoziladi.")
+                b1, b2 = st.columns(2)
+                if b1.button("✅ Kirimni saqlash", type="primary"):
+                    if sp == NEW and not new_sup:
+                        st.error("Yangi yetkazib beruvchi nomini yozing.")
+                    elif sp is None and paid < total:
+                        st.error("Qarzga olingan bo'lsa, yetkazib beruvchini tanlang yoki yozing.")
+                    elif paid > 0 and acc is None:
+                        st.error("To'lov hisobini tanlang (Bank va kassa → Hisoblar).")
+                    else:
+                        try:
+                            with ENGINE.begin() as c:
+                                partner = sp
+                                if sp == NEW:
+                                    partner = c.execute(text("SELECT id FROM partners WHERE name=:n AND kind='Yetkazib beruvchi'"), {"n": new_sup}).scalar()
+                                    if partner is None:
+                                        partner = c.execute(text("INSERT INTO partners (name,kind) VALUES (:n,'Yetkazib beruvchi') RETURNING id"), {"n": new_sup}).scalar()
+                                rid = c.execute(text("INSERT INTO receipts (created,user_name,partner_id,total,paid) VALUES (:t,:u,:p,:s,:pd) RETURNING id"),
+                                                {"t": now(), "u": user["username"], "p": partner, "s": total, "pd": paid}).scalar()
+                                for r in ss.rc:
+                                    pid_ = r["pid"]
+                                    if pid_ is None:
+                                        pid_ = c.execute(text("INSERT INTO products (name,unit,price,cost,marked,stock,active) VALUES (:n,:u,:p,:c,:m,0,1) RETURNING id"),
+                                                         {"n": r["name"], "u": r["unit"], "p": r["price"], "c": r["cost"], "m": int(r["marked"])}).scalar()
+                                    c.execute(text("INSERT INTO receipt_items (receipt_id,product_id,name,qty,cost,price) VALUES (:r,:p,:n,:q,:c,:pr)"),
+                                              {"r": rid, "p": pid_, "n": r["name"], "q": r["qty"], "c": r["cost"], "pr": r["price"]})
+                                    c.execute(text("UPDATE products SET stock = stock + :q, cost=:c, price=:pr WHERE id=:p"),
+                                              {"q": r["qty"], "c": r["cost"], "pr": r["price"], "p": pid_})
+                                    if r["codes"]:
+                                        c.execute(text("INSERT INTO mark_codes (product_id,code,status,receipt_id) VALUES (:p,:c,'omborda',:r)"),
+                                                  [{"p": pid_, "c": x, "r": rid} for x in r["codes"]])
+                                if partner:
+                                    c.execute(text("INSERT INTO ledger (created,partner_id,amount,doc,note,user_name) VALUES (:t,:p,:a,:d,'Tovar kirimi',:u)"),
+                                              {"t": now(), "p": partner, "a": -total, "d": f"Kirim №{rid}", "u": user["username"]})
+                                if paid > 0:
+                                    c.execute(text("INSERT INTO cash_moves (created,account_id,amount,partner_id,doc,note,user_name) VALUES (:t,:a,:s,:p,:d,'Kirim uchun to''lov',:u)"),
+                                              {"t": now(), "a": acc, "s": -paid, "p": partner, "d": f"Kirim №{rid}", "u": user["username"]})
+                                    if partner:
+                                        c.execute(text("INSERT INTO ledger (created,partner_id,amount,doc,note,user_name) VALUES (:t,:p,:a,:d,'To''lov',:u)"),
+                                                  {"t": now(), "p": partner, "a": paid, "d": f"Kirim №{rid}", "u": user["username"]})
+                            log("Omborga kirim", f"№{rid}, {m(total)}, {len(ss.rc)} qator")
+                            ss.kirim_ok = f"✅ Kirim №{rid} saqlandi: {len(ss.rc)} ta tovar, {m(total)}. Qoldiq yangilandi."
+                            ss.rc = []
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Xato: {e}")
+                if b2.button("↩️ Oxirgi qatorni o'chirish"):
+                    ss.rc.pop()
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Xato: {e}")
-        if b2.button("↩️ Oxirgi qatorni o'chirish"):
-            ss.rc.pop()
-            st.rerun()
+
+            else:
+                st.info("Ro'yxat bo'sh. Chapdan tovar qo'shing yoki Excel'dan yuklang.")
 
     st.markdown("---")
     st.markdown("### 📦 Ombordagi tovarlar (hozirgi qoldiq)")
@@ -1132,7 +1274,17 @@ elif menu == "kassirlar":
                 log("Xodim o'zgartirildi", f"{who}: faol={act}, parol {'almashtirildi' if newp else 'o`zgarmadi'}")
                 st.success("Saqlandi.")
     with top:
-        show_df(q("SELECT username, full_name, role, active FROM users ORDER BY id"), {"username": "Login", "full_name": "Ism", "role": "Rol", "active": "Faol"})
+        ul = q("""SELECT u.username, u.full_name, u.role, u.active,
+            COALESCE((SELECT COUNT(*) FROM sales s WHERE s.cashier=u.username AND substr(s.created,1,10)=:d),0) AS ch_bugun,
+            COALESCE((SELECT SUM(total) FROM sales s WHERE s.cashier=u.username AND substr(s.created,1,10)=:d),0) AS bugun,
+            COALESCE((SELECT SUM(total) FROM sales s WHERE s.cashier=u.username AND substr(s.created,1,7)=:mo),0) AS oy,
+            COALESCE((SELECT COUNT(*) FROM receipts r WHERE r.user_name=u.username AND substr(r.created,1,7)=:mo),0) AS kirim_oy
+            FROM users u ORDER BY u.id""", d=now()[:10], mo=now()[:7])
+        ul["role"] = ul["role"].map(ROLES)
+        ul["active"] = ul["active"].map(lambda x: "Faol" if x else "O'chirilgan")
+        st.markdown("##### 👥 Xodimlar ro'yxati va ko'rsatkichlari")
+        show_df(ul, {"username": "Login", "full_name": "Ism-familiya", "role": "Rol", "active": "Holati", "ch_bugun": "Bugungi cheklar",
+                     "bugun": "Bugungi savdo", "oy": "Shu oy savdo", "kirim_oy": "Shu oy kirim hujjatlari"})
 
 elif menu == "audit":
     s = st.text_input("Foydalanuvchi yoki amal bo'yicha qidirish")
@@ -1282,14 +1434,55 @@ elif menu == "stat":
     c1, c2 = st.columns(2)
     d1 = c1.date_input("Boshlanish", value=date.today().replace(day=1), key="sd1")
     d2 = c2.date_input("Tugash", value=date.today(), key="sd2")
-    sl = q(SALES_SQL + " WHERE created >= :a AND created <= :b", a=f"{d1} 00:00:00", b=f"{d2} 23:59:59")
-    if sl.empty:
-        st.info("Bu davrda sotuv yo'q.")
-    else:
-        g = sl.groupby("cashier").agg(cheklar=("id", "count"), summa=("total", "sum"), tushum=("paid_", "sum"), nasiya=("debt_", "sum")).reset_index()
-        g["ortacha"] = g["summa"] / g["cheklar"]
-        show_df(g, {"cashier": "Kassir", "cheklar": "Cheklar soni", "summa": "Savdo summasi", "tushum": "Tushum (kassaga)", "nasiya": "Nasiyaga", "ortacha": "O'rtacha chek"})
-        st.bar_chart(g.set_index("cashier")["summa"])
+    a_, b_ = f"{d1} 00:00:00", f"{d2} 23:59:59"
+    us = q("SELECT username, full_name, role, active FROM users ORDER BY id")
+    sl = q(SALES_SQL + " WHERE created >= :a AND created <= :b", a=a_, b=b_)
+    rc = q("SELECT user_name, COUNT(*) AS n, COALESCE(SUM(total),0) AS s FROM receipts WHERE created >= :a AND created <= :b GROUP BY user_name", a=a_, b=b_)
+    sg = (sl.groupby("cashier").agg(cheklar=("id", "count"), summa=("total", "sum"), tushum=("paid_", "sum"), nasiya=("debt_", "sum"))
+          if not sl.empty else pd.DataFrame(columns=["cheklar", "summa", "tushum", "nasiya"]))
+    t = us.merge(sg, left_on="username", right_index=True, how="left").merge(rc, left_on="username", right_on="user_name", how="left")
+    for c_ in ["cheklar", "summa", "tushum", "nasiya", "n", "s"]:
+        t[c_] = pd.to_numeric(t[c_], errors="coerce").fillna(0)
+    t["ortacha"] = (t["summa"] / t["cheklar"]).where(t["cheklar"] > 0, 0)
+    t["xodim"] = t["full_name"].fillna("").where(t["full_name"].fillna("") != "", t["username"])
+    t["rol"] = t["role"].map(ROLES)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Jami savdo", m(t["summa"].sum()))
+    k2.metric("Cheklar soni", int(t["cheklar"].sum()))
+    k3.metric("Kirim summasi", m(t["s"].sum()))
+    k4.metric("Faol xodimlar", int(us["active"].sum()))
+    st.markdown("##### 👥 Kim qancha savdo qilgan va kim tovar kirim qilgan")
+    show_df(t[["xodim", "username", "rol", "cheklar", "summa", "tushum", "nasiya", "ortacha", "n", "s"]],
+            {"xodim": "Xodim", "username": "Login", "rol": "Rol", "cheklar": "Cheklar", "summa": "Savdo summasi", "tushum": "Tushum (kassaga)",
+             "nasiya": "Nasiyaga", "ortacha": "O'rtacha chek", "n": "Kirim hujjatlari", "s": "Kirim summasi"})
+    g1, g2 = st.columns(2)
+    g1.markdown("**Savdo summasi (xodimlar kesimida)**")
+    g1.bar_chart(t.set_index("xodim")["summa"])
+    g2.markdown("**Kirim summasi (xodimlar kesimida)**")
+    g2.bar_chart(t.set_index("xodim")["s"])
+    st.markdown("---")
+    who = st.selectbox("Xodim kartochkasi", us["username"].tolist(),
+                       format_func=lambda u_: f"{t.loc[t['username'] == u_, 'xodim'].iloc[0]} ({u_})")
+    mine = sl[sl["cashier"] == who]
+    h1, h2 = st.columns(2)
+    with h1:
+        st.markdown("**Kunlik savdo**")
+        if mine.empty:
+            st.info("Bu davrda sotuv yo'q.")
+        else:
+            st.bar_chart(mine.assign(kun=mine["created"].str[:10]).groupby("kun")["total"].sum())
+            show_df(mine[["id", "created", "payment", "customer", "total"]].head(100), {"id": "Chek №", "created": "Vaqt", "payment": "To'lov", "customer": "Mijoz", "total": "Summa"})
+    with h2:
+        st.markdown("**Kirim qilgan tovarlari**")
+        ki = q("""SELECT ri.name, SUM(ri.qty) AS qty, SUM(ri.qty*ri.cost) AS sm FROM receipt_items ri JOIN receipts r ON r.id=ri.receipt_id
+                  WHERE r.user_name=:u AND r.created >= :a AND r.created <= :b GROUP BY ri.name ORDER BY sm DESC""", u=who, a=a_, b=b_)
+        if ki.empty:
+            st.info("Bu davrda kirim yo'q.")
+        else:
+            show_df(ki, {"name": "Tovar", "qty": "Jami soni", "sm": "Summa"})
+            kd = q("""SELECT r.id, r.created, pa.name AS partner, r.total, r.paid FROM receipts r LEFT JOIN partners pa ON pa.id=r.partner_id
+                      WHERE r.user_name=:u AND r.created >= :a AND r.created <= :b ORDER BY r.id DESC LIMIT 100""", u=who, a=a_, b=b_)
+            show_df(kd, {"id": "Kirim №", "created": "Vaqt", "partner": "Yetkazib beruvchi", "total": "Summa", "paid": "To'langan"})
 
 elif menu == "kurs":
     with st.form("kurs"):
