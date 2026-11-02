@@ -1,6 +1,7 @@
 import hashlib
 import io
 import secrets
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import html
@@ -60,6 +61,17 @@ def init_db():
         try:
             with ENGINE.begin() as c:
                 c.execute(text(f"ALTER TABLE {t} ADD COLUMN {col}"))
+        except Exception:
+            pass
+    # tezlik uchun indekslar
+    for t, cols in [("sales", "created"), ("sales", "cashier"), ("sales", "partner_id"), ("sale_items", "sale_id"), ("sale_items", "product_id"),
+                    ("receipts", "created"), ("receipts", "partner_id"), ("receipts", "user_name"), ("receipt_items", "receipt_id"),
+                    ("receipt_items", "product_id"), ("cash_moves", "account_id"), ("cash_moves", "created"), ("cash_moves", "partner_id"),
+                    ("ledger", "partner_id"), ("ledger", "created"), ("mark_codes", "product_id, status"), ("mark_codes", "sale_id"),
+                    ("mark_codes", "receipt_id"), ("audit", "created"), ("products", "barcode"), ("partners", "kind")]:
+        try:
+            with ENGINE.begin() as c:
+                c.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{t}_{cols.replace(', ', '_')} ON {t} ({cols})"))
         except Exception:
             pass
 
@@ -346,7 +358,7 @@ NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti)])
                             ("Kirim-Chiqim", "harakat"), ("Kontragent to'lovlari", "kontr"), ("Kassalar (hisoblar)", "hisob"), ("Kassa tahlili", "kassa"),
                             ("Muddati o'tgan qarzdorlar", "qarz_o"), ("Muddati o'tmagan qarzdorlar", "qarz_n"), ("Narx o'zgartirish so'rovlari", "narxsorov")]),
     ("📊", "Hisobotlar", [("Savdo hisoboti", "hisobot"), ("Qarzdorlik", "qarz"), ("Akt sverka", "akt"), ("Kassirlar hisoboti", "stat")]),
-    ("⚙️", "Sozlamalar", [("Xodimlar (kassirlar)", "kassirlar"), ("Audit jurnali", "audit"), ("Valyuta kursi", "kurs"), ("Do'kon ma'lumotlari", "dokon")]),
+    ("⚙️", "Sozlamalar", [("Xodimlar (kassirlar)", "kassirlar"), ("Audit jurnali", "audit"), ("Valyuta kursi", "kurs"), ("Do'kon ma'lumotlari", "dokon"), ("Zaxira nusxa", "zaxira")]),
 ]
 ALLOWED = {"kassir": {"pos"}, "omborchi": {"tovar", "qoldiq", "jurnal", "kirim", "kirimlar", "kodlar", "narxsorov", "inventar"}}
 
@@ -357,6 +369,9 @@ for k, v in {"user": None, "cart": [], "receipt": "", "msg": None, "rc": []}.ite
 # ================================================================ KIRISH
 if not ss.get("user"):
     st.title("🛒 Sav-do ERP")
+if ENGINE.dialect.name == "sqlite":
+    st.error("⚠️ DIQQAT: ma'lumotlar bazasi ulanmagan! Ma'lumotlar vaqtinchalik faylda saqlanmoqda va ilova qayta ishga tushganda YO'QOLADI. "
+             "Streamlit Cloud → Settings → Secrets ga DATABASE_URL (Neon) ni yozing.")
 
 if q("SELECT COUNT(*) FROM users").iloc[0, 0] == 0:
     st.subheader("Birinchi administratorni yarating")
@@ -373,21 +388,51 @@ if q("SELECT COUNT(*) FROM users").iloc[0, 0] == 0:
                 st.success("Tayyor! Endi sahifani yangilab, kiring.")
     st.stop()
 
+@st.cache_resource
+def fail_store():
+    return {}
+
+
+FAILS, MAX_FAILS, LOCK_SEC = fail_store(), 5, 600
+
 if not ss.user:
     st.subheader("🔐 Tizimga kirish")
+    if ss.pop("timeout_msg", False):
+        st.info("Uzoq vaqt harakatsiz qoldingiz, xavfsizlik uchun tizimdan chiqarildingiz. Qayta kiring.")
     with st.form("login"):
         u = st.text_input("Login")
         p = st.text_input("Parol", type="password")
         if st.form_submit_button("Kirish", type="primary"):
-            r = q("SELECT * FROM users WHERE username=:u AND active=1", u=u.strip().lower())
-            if not r.empty and check_pw(p, r.iloc[0]["pw"]):
-                row = r.iloc[0]
-                ss.user = {"username": row["username"], "name": row["full_name"] or row["username"], "role": row["role"]}
-                log("Tizimga kirdi")
-                st.rerun()
+            key_, tnow = u.strip().lower(), time.time()
+            recent = [x for x in FAILS.get(key_, []) if tnow - x < LOCK_SEC]
+            FAILS[key_] = recent
+            if len(recent) >= MAX_FAILS:
+                st.error(f"Juda ko'p noto'g'ri urinish. {int((LOCK_SEC - (tnow - recent[0])) // 60) + 1} daqiqadan keyin qayta urinib ko'ring.")
             else:
-                st.error("Login yoki parol noto'g'ri.")
+                r = q("SELECT * FROM users WHERE username=:u AND active=1", u=key_)
+                if not r.empty and check_pw(p, r.iloc[0]["pw"]):
+                    row = r.iloc[0]
+                    FAILS.pop(key_, None)
+                    ss.user = {"username": row["username"], "name": row["full_name"] or row["username"], "role": row["role"]}
+                    ss.last_active = time.time()
+                    log("Tizimga kirdi")
+                    st.rerun()
+                else:
+                    FAILS.setdefault(key_, []).append(tnow)
+                    log("Kirish xatosi", key_)
+                    st.error("Login yoki parol noto'g'ri.")
     st.stop()
+
+# harakatsizlikdan keyin avtomatik chiqish (sozlama: idle_min, standart 30 daqiqa)
+try:
+    _idle = max(5, int(get_setting("idle_min", "30")))
+except Exception:
+    _idle = 30
+_tn = time.time()
+if ss.get("last_active") and _tn - ss.last_active > _idle * 60:
+    ss.user, ss.cart, ss.last_active, ss.timeout_msg = None, [], None, True
+    st.rerun()
+ss.last_active = _tn
 
 user = ss.user
 try:
@@ -461,12 +506,23 @@ if ss.get("nav_sec") not in sec_map:
     ss.nav_sec = list(sec_map)[0]
 if ss.get("nav_sub") not in [x[1] for x in sec_map[ss.nav_sec]]:
     ss.nav_sub = sec_map[ss.nav_sec][0][1]
-BADGE = {}
-if user["role"] == "admin":
-    try:
-        BADGE["narxsorov"] = int(q("SELECT COUNT(*) FROM price_requests WHERE status='kutilmoqda'").iloc[0, 0])
+@st.cache_data(ttl=45, show_spinner=False)
+def badge_counts(is_admin):
+    out = {"low": int(q("SELECT COUNT(*) FROM products WHERE active=1 AND stock<=5").iloc[0, 0])}
+    if is_admin:
+        out["narxsorov"] = int(q("SELECT COUNT(*) FROM price_requests WHERE status='kutilmoqda'").iloc[0, 0])
         _d = debtors()
-        BADGE["qarz_o"] = int((_d["overdue"] > 0.5).sum()) if not _d.empty else 0
+        out["qarz_o"] = int((_d["overdue"] > 0.5).sum()) if not _d.empty else 0
+    return out
+
+
+BADGE, BADGE_LOW = {}, 0
+if user["role"] != "kassir":
+    try:
+        _bc = badge_counts(user["role"] == "admin")
+        BADGE_LOW = _bc.get("low", 0)
+        if user["role"] == "admin":
+            BADGE = {k: v for k, v in _bc.items() if k != "low"}
     except Exception:
         pass
 
@@ -505,14 +561,19 @@ if _out:
     st.rerun()
 menu = ss.nav_sub
 pk = next(n for n, k_ in sec_map[ss.nav_sec] if k_ == menu)
-try:
-    _low = int(q("SELECT COUNT(*) FROM products WHERE active=1 AND stock<=5").iloc[0, 0]) if user["role"] != "kassir" else 0
-except Exception:
-    _low = 0
+_low = BADGE_LOW
+_bkchip = ""
+if user["role"] == "admin":
+    try:
+        _bk = get_setting("last_backup", "")
+        if not _bk or (datetime.now() - datetime.strptime(_bk, "%Y-%m-%d %H:%M:%S")).days >= 7:
+            _bkchip = "<span class='chip warn'>💾 Zaxira nusxa oling</span>"
+    except Exception:
+        pass
 _notif = sum(BADGE.values()) + _low
 st.markdown(
     f"<div class='topbar'><div class='ttl'>{html.escape(pk)}</div><div class='chips'><span class='chip'>💱 1 $ = {RATE:,.0f} so'm</span><span class='chip'>📅 {now()[:10]}</span>"
-    f"<span class='chip{' warn' if _notif else ''}'>🔔 {_notif}</span>"
+    f"{_bkchip}<span class='chip{' warn' if _notif else ''}'>🔔 {_notif}</span>"
     f"<span class='chip'>👤 {html.escape(str(user['name']))} · {ROLES[user['role']]}</span></div></div>", unsafe_allow_html=True)
 
 
@@ -1520,6 +1581,28 @@ elif menu == "stat":
             kd = q("""SELECT r.id, r.created, pa.name AS partner, r.total, r.paid FROM receipts r LEFT JOIN partners pa ON pa.id=r.partner_id
                       WHERE r.user_name=:u AND r.created >= :a AND r.created <= :b ORDER BY r.id DESC LIMIT 100""", u=who, a=a_, b=b_)
             show_df(kd, {"id": "Kirim №", "created": "Vaqt", "partner": "Yetkazib beruvchi", "total": "Summa", "paid": "To'langan"})
+
+elif menu == "zaxira":
+    from sqlalchemy import inspect as _insp
+    st.markdown("Barcha ma'lumotlar bitta Excel fayliga yig'iladi (har bir jadval alohida varaqda). Parollar (xesh) faylga kiritilmaydi. "
+                "Faylni xavfsiz joyda (Google Drive, flesh-xotira) saqlang. **Kamida haftada bir marta oling.**")
+    st.caption(f"Oxirgi zaxira: {get_setting('last_backup', '') or 'hali olinmagan'}")
+    if st.button("📦 Zaxira nusxa tayyorlash", type="primary"):
+        buf, n = io.BytesIO(), 0
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            for t in sorted(_insp(ENGINE).get_table_names()):
+                with ENGINE.connect() as c:
+                    d = pd.read_sql(text(f"SELECT * FROM {t}"), c)
+                if t == "users" and "pw" in d.columns:
+                    d = d.drop(columns=["pw"])
+                d.to_excel(w, sheet_name=t[:31], index=False)
+                n += 1
+        ss.backup_bytes = buf.getvalue()
+        set_setting("last_backup", now())
+        log("Zaxira nusxa olindi", f"{n} ta jadval")
+        st.success(f"{n} ta jadval yig'ildi. Pastdagi tugma bilan yuklab oling.")
+    if ss.get("backup_bytes"):
+        st.download_button("⬇️ Zaxira faylini yuklab olish (.xlsx)", ss.backup_bytes, file_name=f"savdo_zaxira_{now()[:10]}.xlsx", mime=XLSX)
 
 elif menu == "kurs":
     with st.form("kurs"):
