@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -46,6 +47,10 @@ def init_db():
         f"receipt_items (id {PK}, receipt_id INTEGER, product_id INTEGER, name TEXT, qty {D}, cost {D}, price {D})",
         f"mark_codes (id {PK}, product_id INTEGER, code TEXT UNIQUE NOT NULL, status TEXT, receipt_id INTEGER, sale_id INTEGER)",
         f"audit (id {PK}, created TEXT, user_name TEXT, action TEXT, details TEXT)",
+        f"sessions (id {PK}, token_hash TEXT UNIQUE NOT NULL, username TEXT, created TEXT, last_seen TEXT)",
+        f"carts (id {PK}, username TEXT UNIQUE NOT NULL, data TEXT, updated TEXT)",
+        f"held_sales (id {PK}, created TEXT, username TEXT, label TEXT, data TEXT, total {D})",
+        f"shifts (id {PK}, username TEXT, opened TEXT, closed TEXT, account_id INTEGER, open_cash {D}, expected {D}, counted {D}, diff {D}, handed {D}, note TEXT, status TEXT)",
         f"price_requests (id {PK}, created TEXT, user_name TEXT, product_id INTEGER, old_price {D}, new_price {D}, status TEXT, decided_by TEXT, decided_at TEXT)",
         "settings (k TEXT PRIMARY KEY, v TEXT)",
         f"promos (id {PK}, product_id INTEGER, title TEXT, kind TEXT, value {D}, start_date TEXT, end_date TEXT, active INTEGER DEFAULT 1)",
@@ -350,7 +355,7 @@ RN_P = {"id": "ID", "name": "Tovar", "unit": "Birlik", "price": "Sotuv narxi", "
 ROLES = {"admin": "Administrator", "kassir": "Kassir", "omborchi": "Omborchi"}
 NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti)])
     ("🏠", "Asosiy", [("Boshqaruv paneli", "panel")]),
-    ("🛍️", "Sotuvlar", [("Kassa (POS)", "pos"), ("Sotuvlar ro'yxati", "sotuvlar"), ("Mijozlar", "mijoz"), ("Aksiyalar", "aksiya")]),
+    ("🛍️", "Sotuvlar", [("Kassa (POS)", "pos"), ("Smena", "smena"), ("Sotuvlar ro'yxati", "sotuvlar"), ("Mijozlar", "mijoz"), ("Aksiyalar", "aksiya")]),
     ("🧾", "Nasiya", [("Nasiya daftari", "nas_daftar"), ("Mijoz kartochkasi", "nas_karta"), ("Nasiya tahlili", "nas_tahlil")]),
     ("🛒", "Xaridlar", [("Omborga kirim", "kirim"), ("Kirim hujjatlari", "kirimlar"), ("Yetkazib beruvchilar", "taminot"), ("Yetkazib beruvchiga qaytarish", "taminotqayt")]),
     ("📦", "Ombor", [("Qoldiqlar", "qoldiq"), ("Kirim jurnali", "jurnal"), ("Tovarlar", "tovar"), ("Markirovka kodlari", "kodlar"), ("Inventarizatsiya", "inventar")]),
@@ -360,7 +365,7 @@ NAV = [  # (belgi, bo'lim, [(ichki bo'lim, sahifa kaliti)])
     ("📊", "Hisobotlar", [("Savdo hisoboti", "hisobot"), ("Qarzdorlik", "qarz"), ("Akt sverka", "akt"), ("Kassirlar hisoboti", "stat")]),
     ("⚙️", "Sozlamalar", [("Xodimlar (kassirlar)", "kassirlar"), ("Audit jurnali", "audit"), ("Valyuta kursi", "kurs"), ("Do'kon ma'lumotlari", "dokon"), ("Zaxira nusxa", "zaxira")]),
 ]
-ALLOWED = {"kassir": {"pos"}, "omborchi": {"tovar", "qoldiq", "jurnal", "kirim", "kirimlar", "kodlar", "narxsorov", "inventar"}}
+ALLOWED = {"kassir": {"pos", "smena"}, "omborchi": {"tovar", "qoldiq", "jurnal", "kirim", "kirimlar", "kodlar", "narxsorov", "inventar"}}
 
 ss = st.session_state
 for k, v in {"user": None, "cart": [], "receipt": "", "msg": None, "rc": []}.items():
@@ -388,12 +393,93 @@ if q("SELECT COUNT(*) FROM users").iloc[0, 0] == 0:
                 st.success("Tayyor! Endi sahifani yangilab, kiring.")
     st.stop()
 
+def _jd(o):
+    return o.item() if hasattr(o, "item") else str(o)
+
+
+def tok_hash(t):
+    return hashlib.sha256(t.encode()).hexdigest()
+
+
+def start_session(username):
+    tok = secrets.token_urlsafe(24)
+    ex("INSERT INTO sessions (token_hash,username,created,last_seen) VALUES (:h,:u,:t,:t)", h=tok_hash(tok), u=username, t=now())
+    st.query_params["t"] = tok
+    ss.tok = tok
+
+
+def end_session():
+    tok = ss.get("tok") or st.query_params.get("t")
+    if tok:
+        try:
+            ex("DELETE FROM sessions WHERE token_hash=:h", h=tok_hash(str(tok)))
+        except Exception:
+            pass
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    ss.tok = None
+
+
+def restore_session(idle_min):
+    """Sahifa yangilanganda tokenga qarab kirishni tiklaydi."""
+    tok = st.query_params.get("t")
+    if not tok:
+        return False
+    r = q("SELECT s.last_seen, s.created AS s_created, u.username, u.full_name, u.role FROM sessions s JOIN users u ON u.username=s.username WHERE s.token_hash=:h AND u.active=1", h=tok_hash(str(tok)))
+    if not r.empty:
+        row = r.iloc[0]
+        t_now = datetime.now(timezone(timedelta(hours=5))).replace(tzinfo=None)
+        fmt = "%Y-%m-%d %H:%M:%S"
+        if t_now - datetime.strptime(row["last_seen"], fmt) <= timedelta(minutes=idle_min) and t_now - datetime.strptime(row["s_created"], fmt) <= timedelta(hours=12):
+            ss.user = {"username": row["username"], "name": row["full_name"] or row["username"], "role": row["role"]}
+            ss.tok, ss.last_active, ss.cart_loaded = str(tok), time.time(), False
+            return True
+    end_session()
+    return False
+
+
+def load_cart():
+    r = q("SELECT data FROM carts WHERE username=:u", u=ss.user["username"])
+    try:
+        ss.cart = json.loads(r.iloc[0, 0]) if not r.empty and r.iloc[0, 0] else []
+    except Exception:
+        ss.cart = []
+    ss.cart_saved = json.dumps(ss.cart, ensure_ascii=False, default=_jd)
+
+
+def save_cart():
+    if not ss.get("user"):
+        return
+    js = json.dumps(ss.cart, ensure_ascii=False, default=_jd)
+    if js != ss.get("cart_saved"):
+        with ENGINE.begin() as c:
+            r = c.execute(text("UPDATE carts SET data=:d, updated=:t WHERE username=:u"), {"d": js, "t": now(), "u": ss.user["username"]})
+            if r.rowcount == 0:
+                c.execute(text("INSERT INTO carts (username,data,updated) VALUES (:u,:d,:t)"), {"u": ss.user["username"], "d": js, "t": now()})
+        ss.cart_saved = js
+
+
 @st.cache_resource
 def fail_store():
     return {}
 
 
 FAILS, MAX_FAILS, LOCK_SEC = fail_store(), 5, 600
+
+try:
+    _idle0 = max(5, int(get_setting("idle_min", "30")))
+except Exception:
+    _idle0 = 30
+if not ss.user:
+    _restored = False
+    try:
+        _restored = restore_session(_idle0)
+    except Exception:
+        pass
+    if _restored:
+        st.rerun()
 
 if not ss.user:
     st.subheader("🔐 Tizimga kirish")
@@ -415,6 +501,8 @@ if not ss.user:
                     FAILS.pop(key_, None)
                     ss.user = {"username": row["username"], "name": row["full_name"] or row["username"], "role": row["role"]}
                     ss.last_active = time.time()
+                    ss.cart_loaded = False
+                    start_session(row["username"])
                     log("Tizimga kirdi")
                     st.rerun()
                 else:
@@ -430,9 +518,29 @@ except Exception:
     _idle = 30
 _tn = time.time()
 if ss.get("last_active") and _tn - ss.last_active > _idle * 60:
-    ss.user, ss.cart, ss.last_active, ss.timeout_msg = None, [], None, True
+    try:
+        save_cart()
+        end_session()
+    except Exception:
+        pass
+    ss.user, ss.cart, ss.last_active, ss.timeout_msg, ss.cart_loaded = None, [], None, True, False
     st.rerun()
 ss.last_active = _tn
+if _tn - ss.get("last_touch", 0) > 60:
+    ss.last_touch = _tn
+    if ss.get("tok"):
+        try:
+            ex("UPDATE sessions SET last_seen=:t WHERE token_hash=:h", t=now(), h=tok_hash(ss.tok))
+        except Exception:
+            pass
+try:
+    if not ss.get("cart_loaded"):
+        load_cart()
+        ss.cart_loaded = True
+    else:
+        save_cart()
+except Exception:
+    pass
 
 user = ss.user
 try:
@@ -556,8 +664,12 @@ except Exception:
     _out = st.sidebar.button("🚪 Chiqish", key="logout")
 if _out:
     log("Tizimdan chiqdi")
-    ss.user = None
-    ss.cart = []
+    try:
+        save_cart()
+        end_session()
+    except Exception:
+        pass
+    ss.user, ss.cart, ss.cart_loaded = None, [], False
     st.rerun()
 menu = ss.nav_sub
 pk = next(n for n, k_ in sec_map[ss.nav_sec] if k_ == menu)
@@ -723,6 +835,39 @@ def on_scan():
     add_cart(p)
 
 
+def hold_cart():
+    if not ss.cart:
+        return
+    tot = sum(i["price"] * i["qty"] for i in ss.cart)
+    ex("INSERT INTO held_sales (created,username,label,data,total) VALUES (:t,:u,:l,:d,:s)", t=now(), u=ss.user["username"],
+       l=(ss.get("hold_lbl") or "").strip(), d=json.dumps(ss.cart, ensure_ascii=False, default=_jd), s=tot)
+    log("Chek kutishga qo'yildi", m(tot))
+    ss.cart, ss.hold_lbl = [], ""
+
+
+def resume_held(hid):
+    if ss.cart:
+        ss.msg = ("warning", "Avval joriy savatni kutishga qo'ying yoki tozalang.")
+        return
+    r = q("SELECT data FROM held_sales WHERE id=:i", i=int(hid))
+    if not r.empty:
+        ss.cart = json.loads(r.iloc[0, 0])
+        ex("DELETE FROM held_sales WHERE id=:i", i=int(hid))
+
+
+def drop_held(hid):
+    ex("DELETE FROM held_sales WHERE id=:i", i=int(hid))
+    log("Kutayotgan chek o'chirildi", f"№{hid}")
+
+
+def open_shift(u):
+    r = q("SELECT * FROM shifts WHERE username=:u AND status='ochiq' ORDER BY id DESC LIMIT 1", u=u)
+    return r.iloc[0] if not r.empty else None
+
+
+if menu == "pos" and user["role"] == "kassir" and get_setting("shift_required", "1") == "1" and open_shift(user["username"]) is None:
+    menu = "smena_needed"
+
 if menu == "pos":
     prods = q("SELECT * FROM products WHERE active=1 ORDER BY name")
     accs = acc_balances()
@@ -838,7 +983,9 @@ if menu == "pos":
                         st.rerun()
                     except Exception as e:
                         st.error(f"Xato: {e}")
-            b1, b2 = st.columns(2)
+            st.text_input("Kutish uchun izoh (mijoz ismi, ixtiyoriy)", key="hold_lbl")
+            b1, b3, b2 = st.columns(3)
+            b3.button("⏸ Kutishga qo'yish", on_click=hold_cart)
             if b1.button("↩️ Oxirgisini o'chirish"):
                 last = ss.cart[-1]
                 if last["codes"]:
@@ -854,9 +1001,94 @@ if menu == "pos":
                 st.rerun()
         else:
             st.info("Savat bo'sh. Tovarni tanlang yoki kodini skanerlang.")
+        _adm = user["role"] == "admin"
+        hd = q("SELECT id,created,username,label,total FROM held_sales" + ("" if _adm else " WHERE username=:u") + " ORDER BY id DESC", **({} if _adm else {"u": user["username"]}))
+        if not hd.empty:
+            st.markdown(f"**⏸ Kutayotgan cheklar ({len(hd)})**")
+            for r in hd.itertuples():
+                x1, x2, x3 = st.columns([4, 1.6, 1])
+                x1.markdown(f"**{r.label or 'Izohsiz'}** · {str(r.created)[11:16]} · {m(r.total)}" + (f" · {r.username}" if _adm else ""))
+                x2.button("▶️ Olish", key=f"hr_{r.id}", on_click=resume_held, args=(int(r.id),))
+                x3.button("🗑", key=f"hd_{r.id}", on_click=drop_held, args=(int(r.id),))
         if ss.receipt:
             st.markdown("**Oxirgi chek:**")
             show_receipt(ss.receipt)
+
+elif menu == "smena_needed":
+    st.warning("Sotuvni boshlash uchun avval smenani oching (kassadagi boshlang'ich pulni kiriting).")
+    st.button("▶️ Smenani ochish", type="primary", on_click=go, args=(ss.nav_sec, "smena"))
+
+elif menu == "smena":
+    sh = open_shift(user["username"])
+    if user["role"] == "admin":
+        with st.expander("⚙️ Smena va xavfsizlik sozlamalari (administrator)"):
+            st.checkbox("Kassirlar sotuvdan oldin smenani ochishi shart", value=get_setting("shift_required", "1") == "1", key="shreq",
+                        on_change=lambda: set_setting("shift_required", "1" if ss.shreq else "0"))
+            st.number_input("Harakatsizlikdan keyin avtomatik chiqish (daqiqa)", min_value=5, max_value=480, step=5, key="idlemin",
+                            value=int(get_setting("idle_min", "30") or 30), on_change=lambda: set_setting("idle_min", str(int(ss.idlemin))))
+    accs = acc_balances()
+    cash_accs = accs[accs["kind"] == "Naqd kassa"]
+    if sh is None:
+        st.info("🔴 Smena yopiq. Sotuvni boshlash uchun smenani oching.")
+        if cash_accs.empty:
+            st.warning("Naqd kassa yo'q. Buxgalteriya → Kassalar bo'limida «Naqd kassa» qo'shing.")
+        else:
+            st.caption("Kassadagi hisob bo'yicha pul: " + ", ".join(f"{r['name']} — {m(r['balance'])}" for _, r in cash_accs.iterrows()))
+            with st.form("sh_open"):
+                acc = pick("Qaysi naqd kassada ishlaysiz:", cash_accs, "id", "name")
+                oc = st.number_input("Kassadagi boshlang'ich pul (so'm): sanab chiqing", min_value=0.0, step=1000.0)
+                if st.form_submit_button("▶️ Smenani ochish", type="primary"):
+                    ex("INSERT INTO shifts (username,opened,account_id,open_cash,status) VALUES (:u,:t,:a,:o,'ochiq')", u=user["username"], t=now(), a=int(acc), o=oc)
+                    log("Smena ochildi", f"boshlang'ich {m(oc)}")
+                    st.rerun()
+    else:
+        t0, acc_id = sh["opened"], int(sh["account_id"])
+        mvs = float(q("SELECT COALESCE(SUM(amount),0) FROM cash_moves WHERE account_id=:a AND user_name=:u AND created >= :t", a=acc_id, u=user["username"], t=t0).iloc[0, 0])
+        expected = float(sh["open_cash"] or 0) + mvs
+        sl = q(SALES_SQL + " WHERE cashier=:u AND created >= :t", u=user["username"], t=t0)
+        st.success(f"🟢 Smena ochiq: {t0}")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Boshlang'ich pul", m(float(sh["open_cash"] or 0)))
+        k2.metric("Cheklar", len(sl))
+        k3.metric("Savdo summasi", m(sl["total"].sum()))
+        k4.metric("Kassada bo'lishi kerak (naqd)", m(expected))
+        with st.form("sh_close"):
+            counted = st.number_input("Kassada sanalgan pul (so'm)", min_value=0.0, step=1000.0, value=float(max(expected, 0)))
+            others = accs[accs["id"] != acc_id]
+            tgt = pick("Katta kassaga / hisobga topshirish (ixtiyoriy):", others, "id", "name", none="— topshirilmaydi —") if not others.empty else None
+            hand = st.number_input("Topshiriladigan summa (so'm)", min_value=0.0, step=1000.0)
+            note = st.text_input("Izoh")
+            if st.form_submit_button("⏹ Smenani yopish", type="primary"):
+                diff = counted - expected
+                if hand > counted:
+                    st.error("Topshiriladigan summa sanalgan puldan ko'p bo'lishi mumkin emas.")
+                elif hand > 0 and tgt is None:
+                    st.error("Qaysi hisobga topshirilishini tanlang.")
+                else:
+                    t = now()
+                    sid_ = int(sh["id"])
+                    with ENGINE.begin() as c:
+                        c.execute(text("UPDATE shifts SET closed=:t, expected=:e, counted=:c, diff=:d, handed=:h, note=:n, status='yopiq' WHERE id=:i"),
+                                  {"t": t, "e": expected, "c": counted, "d": diff, "h": hand, "n": note, "i": sid_})
+                        mvq = "INSERT INTO cash_moves (created,account_id,amount,doc,note,user_name) VALUES (:t,:a,:s,:d,:n,:u)"
+                        if abs(diff) > 0.5:
+                            c.execute(text(mvq), {"t": t, "a": acc_id, "s": diff, "d": f"Smena farqi №{sid_}", "n": "Sanash farqi", "u": user["username"]})
+                        if hand > 0:
+                            c.execute(text(mvq), {"t": t, "a": acc_id, "s": -hand, "d": f"Smena topshirish №{sid_}", "n": note, "u": user["username"]})
+                            c.execute(text(mvq), {"t": t, "a": int(tgt), "s": hand, "d": f"Smena topshirish №{sid_}", "n": note, "u": user["username"]})
+                    log("Smena yopildi", f"kutilgan {m(expected)}, sanalgan {m(counted)}, farq {m(diff)}")
+                    ss.imp_msg = f"✅ Smena yopildi. Farq: {m(diff)} ({'kam' if diff < -0.5 else 'ortiqcha' if diff > 0.5 else 'farq yo`q'})."
+                    st.rerun()
+    if ss.get("imp_msg"):
+        st.success(ss.imp_msg)
+        ss.imp_msg = None
+    st.markdown("##### Smenalar tarixi")
+    adm_ = user["role"] == "admin"
+    hs = q("SELECT s.id, s.username, s.opened, s.closed, a.name AS acc, s.open_cash, s.expected, s.counted, s.diff, s.handed, s.status FROM shifts s "
+           "LEFT JOIN accounts a ON a.id=s.account_id" + ("" if adm_ else " WHERE s.username=:u") + " ORDER BY s.id DESC LIMIT 200", **({} if adm_ else {"u": user["username"]}))
+    show_df(hs, {"id": "№", "username": "Kassir", "opened": "Ochildi", "closed": "Yopildi", "acc": "Kassa", "open_cash": "Boshlang'ich", "expected": "Kutilgan",
+                 "counted": "Sanalgan", "diff": "Farq", "handed": "Topshirilgan", "status": "Holati"},
+            color=lambda r: "#FDECEC" if pd.notna(r["Farq"]) and r["Farq"] < -0.5 else ("#FFF8E1" if pd.notna(r["Farq"]) and r["Farq"] > 0.5 else ""))
 
 elif menu == "sotuvlar":
     sales = q("SELECT id,created,cashier,payment,customer,total,COALESCE(paid, CASE WHEN payment='Nasiya' THEN 0 ELSE total END) AS paid_, COALESCE(debt, CASE WHEN payment='Nasiya' THEN total ELSE 0 END) AS debt_ FROM sales ORDER BY id DESC LIMIT 200")
